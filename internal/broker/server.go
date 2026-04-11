@@ -103,5 +103,8 @@ func (bs *BrokerServer) Start(port string) error {
 	log.Printf("Server started on Port %s", port)
 
 	return nil
+}
 
+func (bs *BrokerServer) StartLeaseCheck() {
+	bs.queue.CheckForExpiredLeases()
 }

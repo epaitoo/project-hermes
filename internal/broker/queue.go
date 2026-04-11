@@ -79,3 +79,25 @@ func (qu *Queue) UpdateJob(queueName string, job Job) (Job, error) {
 
 	return j, errors.New("No Job found in Queue")
 }
+
+// method to check for expired leases
+func (qu *Queue) CheckForExpiredLeases() {
+	qu.mu.Lock()
+	defer qu.mu.Unlock()
+
+	for _, jobs := range qu.q {
+		for i := range jobs {
+			if time.Now().After(jobs[i].LeaseExpiresAt) && jobs[i].Status == StatusInProgress {
+				// check for RetryCount
+				if jobs[i].RetryCount >= jobs[i].MaxRetries {
+					jobs[i].Status = StatusFailed
+				} else {
+					jobs[i].Status = StatusPending
+					jobs[i].RetryCount++
+					jobs[i].LeaseExpiresAt = time.Time{}
+					jobs[i].StartedAt = time.Time{}
+				}
+			}
+		}
+	}
+}
