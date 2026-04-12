@@ -4,38 +4,40 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/epaitoo/hermes/internal/models"
 )
 
 type Queue struct {
-	q  map[string][]Job
+	q  map[string][]models.Job
 	mu sync.RWMutex
 }
 
 func NewQueue() *Queue {
-	m := make(map[string][]Job)
+	m := make(map[string][]models.Job)
 	return &Queue{
 		q: m,
 	}
 }
 
 // Add Job
-func (qu *Queue) AddJob(queueName string, job Job) {
+func (qu *Queue) AddJob(queueName string, job models.Job) {
 	qu.mu.Lock()
 	defer qu.mu.Unlock()
 	qu.q[queueName] = append(qu.q[queueName], job)
 }
 
 // Request Job
-func (qu *Queue) RequestJob(queueName string) (Job, error) {
+func (qu *Queue) RequestJob(queueName string) (models.Job, error) {
 	qu.mu.Lock()
 	defer qu.mu.Unlock()
 	jobs, ok := qu.q[queueName]
-	var j Job
+	var j models.Job
 	if ok {
 		if len(jobs) > 0 {
 			for i := range jobs {
-				if jobs[i].Status == StatusPending {
-					jobs[i].Status = StatusInProgress
+				if jobs[i].Status == models.StatusPending {
+					jobs[i].Status = models.StatusInProgress
 					now := time.Now()
 					jobs[i].StartedAt = now
 					// check if there's a LeaseDuration
@@ -54,12 +56,12 @@ func (qu *Queue) RequestJob(queueName string) (Job, error) {
 }
 
 // update job
-func (qu *Queue) UpdateJob(queueName string, job Job) (Job, error) {
+func (qu *Queue) UpdateJob(queueName string, job models.Job) (models.Job, error) {
 	qu.mu.Lock()
 	defer qu.mu.Unlock()
 	// find the job
 	jobs, ok := qu.q[queueName]
-	var j Job
+	var j models.Job
 	if ok {
 		if len(jobs) == 0 {
 			return j, errors.New("queue is empty")
@@ -87,12 +89,12 @@ func (qu *Queue) CheckForExpiredLeases() {
 
 	for _, jobs := range qu.q {
 		for i := range jobs {
-			if time.Now().After(jobs[i].LeaseExpiresAt) && jobs[i].Status == StatusInProgress {
+			if time.Now().After(jobs[i].LeaseExpiresAt) && jobs[i].Status == models.StatusInProgress {
 				// check for RetryCount
 				if jobs[i].RetryCount >= jobs[i].MaxRetries {
-					jobs[i].Status = StatusFailed
+					jobs[i].Status = models.StatusFailed
 				} else {
-					jobs[i].Status = StatusPending
+					jobs[i].Status = models.StatusPending
 					jobs[i].RetryCount++
 					jobs[i].LeaseExpiresAt = time.Time{}
 					jobs[i].StartedAt = time.Time{}

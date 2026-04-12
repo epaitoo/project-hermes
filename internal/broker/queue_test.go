@@ -4,14 +4,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/epaitoo/hermes/internal/models"
 	"github.com/google/uuid"
 )
 
-func createJob() Job {
-	return Job{
+func createJob() models.Job {
+	return models.Job{
 		Id:        uuid.New(),
 		Name:      "test Job",
-		Status:    StatusPending,
+		Status:    models.StatusPending,
 		CreatedAt: time.Now(),
 	}
 }
@@ -53,8 +54,8 @@ func TestRequestJob(t *testing.T) {
 
 	res, err := q.RequestJob("email")
 
-	if res.Status != StatusInProgress {
-		t.Errorf("got %v, wanted %v", res.Status, StatusInProgress)
+	if res.Status != models.StatusInProgress {
+		t.Errorf("got %v, wanted %v", res.Status, models.StatusInProgress)
 	}
 
 	if res.StartedAt.IsZero() {
@@ -88,7 +89,7 @@ func TestUpdateJob(t *testing.T) {
 	q.AddJob("email", j)
 
 	res, _ := q.RequestJob("email")
-	res.Status = StatusCompleted
+	res.Status = models.StatusCompleted
 	res.CompletedAt = time.Now()
 	res.RetryCount = 1
 

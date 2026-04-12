@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/epaitoo/hermes/internal/models"
 	"github.com/google/uuid"
 )
 
@@ -26,7 +27,7 @@ func NewBrokerServer() *BrokerServer {
 
 func (bs *BrokerServer) AddJob(w http.ResponseWriter, r *http.Request) {
 	queueName := r.PathValue("queueName")
-	var job Job
+	var job models.Job
 
 	err := json.NewDecoder(r.Body).Decode(&job)
 	if err != nil {
@@ -36,7 +37,7 @@ func (bs *BrokerServer) AddJob(w http.ResponseWriter, r *http.Request) {
 
 	newUUID := uuid.New()
 	job.Id = newUUID
-	job.Status = StatusPending
+	job.Status = models.StatusPending
 	job.CreatedAt = time.Now()
 
 	bs.queue.AddJob(queueName, job)
@@ -64,7 +65,7 @@ func (bs *BrokerServer) UpdateJob(w http.ResponseWriter, r *http.Request) {
 	queueName := r.PathValue("queueName")
 	jobId := r.PathValue("jobId")
 
-	var j Job
+	var j models.Job
 
 	err := json.NewDecoder(r.Body).Decode(&j)
 	if err != nil {
