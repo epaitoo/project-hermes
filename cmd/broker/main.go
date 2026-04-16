@@ -17,7 +17,7 @@ func startLeaseChecker(stopCh <-chan struct{}, bs *broker.BrokerServer) {
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			bs.StartLeaseCheck()
+			bs.StartLeaseChecker()
 		}
 	}
 }

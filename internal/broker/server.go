@@ -106,6 +106,6 @@ func (bs *BrokerServer) Start(port string) error {
 	return nil
 }
 
-func (bs *BrokerServer) StartLeaseCheck() {
+func (bs *BrokerServer) StartLeaseChecker() {
 	bs.queue.CheckForExpiredLeases()
 }
