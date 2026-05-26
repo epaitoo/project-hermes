@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/epaitoo/hermes/internal/models"
+	"github.com/google/uuid"
 )
 
 type Queue struct {
@@ -25,6 +26,26 @@ func (qu *Queue) AddJob(queueName string, job models.Job) {
 	qu.mu.Lock()
 	defer qu.mu.Unlock()
 	qu.q[queueName] = append(qu.q[queueName], job)
+}
+
+// read a job without modifying it
+func (qu *Queue) ReadJobById(queueName string, jobId uuid.UUID) (models.Job, error) {
+	qu.mu.RLock()
+	defer qu.mu.RUnlock()
+
+	jobs, ok := qu.q[queueName]
+	var j models.Job
+	if ok {
+		for _, job := range jobs {
+			if job.Id == jobId {
+				return job, nil
+			}
+		}
+	} else {
+		return j, errors.New("No Pending Jobs found in Queue")
+	}
+
+	return j, errors.New("No Pending Jobs found in Queue")
 }
 
 // Request Job

@@ -120,3 +120,77 @@ func TestUpdateJob(t *testing.T) {
 	}
 
 }
+
+func TestCheckForExpiredLeases(t *testing.T) {
+
+	type expectedOutcomes struct {
+		jobStatus      models.JobStatus
+		retryCount     int
+		leaseExpiresAt time.Time
+		startedAt      time.Time
+	}
+
+	type jobInputs struct {
+		jobStatus              models.JobStatus
+		leaseExpiresAt         time.Time
+		retryCount, maxRetries int
+	}
+
+	expiredLease := time.Now().Add(-1 * time.Hour)
+	futureLease := time.Now().Add(1 * time.Hour)
+
+	tests := []struct {
+		name     string
+		input    jobInputs
+		expected expectedOutcomes
+	}{
+		{"StatusInProgress_and_lease expired",
+			jobInputs{jobStatus: models.StatusInProgress, leaseExpiresAt: expiredLease, retryCount: 3, maxRetries: 3},
+			expectedOutcomes{jobStatus: models.StatusFailed, retryCount: 3, leaseExpiresAt: expiredLease}},
+
+		{"RetryCount_<_MaxRetries", jobInputs{jobStatus: models.StatusInProgress, leaseExpiresAt: expiredLease, retryCount: 0, maxRetries: 4},
+			expectedOutcomes{jobStatus: models.StatusPending, retryCount: 1, leaseExpiresAt: time.Time{}, startedAt: time.Time{}}},
+
+		{"Job_is_StatusInProgress_+_lease_not_expired", jobInputs{jobStatus: models.StatusInProgress, leaseExpiresAt: futureLease},
+			expectedOutcomes{jobStatus: models.StatusInProgress, leaseExpiresAt: futureLease}},
+
+		{"Job_is_StatusPending_+_lease_expired", jobInputs{jobStatus: models.StatusPending}, expectedOutcomes{jobStatus: models.StatusPending}},
+
+		{"Job_is_StatusCompleted_+_lease_expired", jobInputs{jobStatus: models.StatusCompleted, leaseExpiresAt: expiredLease},
+			expectedOutcomes{jobStatus: models.StatusCompleted, leaseExpiresAt: expiredLease}},
+	}
+
+	for _, tt := range tests {
+		q := NewQueue()
+		j := createJob()
+		j.Id = uuid.New()
+		j.Status = tt.input.jobStatus
+		j.LeaseExpiresAt = tt.input.leaseExpiresAt
+		j.RetryCount = tt.input.retryCount
+		j.MaxRetries = tt.input.maxRetries
+
+		t.Run(tt.name, func(t *testing.T) {
+			q.AddJob("email", j)
+
+			q.CheckForExpiredLeases()
+			res, _ := q.ReadJobById("email", j.Id)
+
+			if res.Status != tt.expected.jobStatus {
+				t.Errorf("got %v, wanted %v", tt.expected.jobStatus, res.Status)
+			}
+
+			if res.RetryCount != tt.expected.retryCount {
+				t.Errorf("got %v, wanted %v", tt.expected.retryCount, res.RetryCount)
+			}
+
+			if res.LeaseExpiresAt != tt.expected.leaseExpiresAt {
+				t.Errorf("got %v, wanted %v", tt.expected.leaseExpiresAt, res.LeaseExpiresAt)
+			}
+
+			if res.StartedAt != tt.expected.startedAt {
+				t.Errorf("got %v, wanted %v", tt.expected.startedAt, res.StartedAt)
+			}
+
+		})
+	}
+}
