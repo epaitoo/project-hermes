@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/epaitoo/hermes/internal/models"
@@ -26,21 +28,25 @@ type Worker struct {
 	BrokerEndpoint string
 	Process        func(models.Job) error
 	JobType        string
+	logger         *slog.Logger
 }
 
 func NewWorker(brokerEndpoint string, proccesFunc func(models.Job) error, jobType string) *Worker {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	return &Worker{
 		Id:             uuid.New(),
 		State:          Idle,
 		BrokerEndpoint: brokerEndpoint,
 		Process:        proccesFunc,
 		JobType:        jobType,
+		logger:         logger,
 	}
 
 }
 
 func (w *Worker) Start(stopCh <-chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
+
 	for {
 		select {
 		case <-stopCh:
@@ -52,14 +58,14 @@ func (w *Worker) Start(stopCh <-chan struct{}) {
 				resp, err := http.Get(endpoint)
 				if err != nil {
 					// handle error
-					fmt.Printf("Error making HTTP request: %s\n", err)
+					w.logger.Error("error making HTTP request", "error", err)
 					return
 				}
 
 				defer resp.Body.Close()
 
 				if resp.StatusCode == http.StatusNotFound {
-					fmt.Println("No Job Found")
+					w.logger.Info("No Job Found")
 					return
 				}
 
@@ -67,18 +73,18 @@ func (w *Worker) Start(stopCh <-chan struct{}) {
 
 				// Decode the JSON response
 				if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
-					fmt.Printf("Error reading response body: %s\n", err)
+					w.logger.Error("error reading response body", "error", err)
 					return
 				}
 
 				// print for now
-				fmt.Print(job)
+				w.logger.Info("job info", "job", job)
 
 				//else -> Process and Update the broker
 				err = w.Process(job)
 				if err != nil {
 					job.Status = models.StatusPending
-					fmt.Printf("error processing job: %s\n", err)
+					w.logger.Error("error processing job", "error", err)
 
 					return
 				}
@@ -89,7 +95,7 @@ func (w *Worker) Start(stopCh <-chan struct{}) {
 				updateErr := w.updateJobRequest(job)
 
 				if updateErr != nil {
-					fmt.Printf("worker updateJobRequest error: %s\n", updateErr)
+					w.logger.Error("worker updateJobRequest error", "error", updateErr)
 				}
 			}()
 		}
@@ -137,8 +143,8 @@ func (w *Worker) updateJobRequest(job models.Job) error {
 	}
 
 	// print the updated job
-	fmt.Printf("Status: %s\n", res.Status)
-	fmt.Printf("Response: %s\n", string(resBody))
+	w.logger.Info("status", "code", res.Status)
+	w.logger.Info("msg", "response", string(resBody))
 
 	return nil
 }
