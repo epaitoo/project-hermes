@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -8,6 +9,8 @@ import (
 	"time"
 
 	"github.com/epaitoo/hermes/internal/broker"
+	"github.com/epaitoo/hermes/internal/models"
+	"github.com/epaitoo/hermes/internal/worker"
 )
 
 func startLeaseChecker(stopCh <-chan struct{}, bs *broker.BrokerServer) {
@@ -29,6 +32,13 @@ func main() {
 
 	brokerServer := broker.NewBrokerServer()
 
+	p := func(j models.Job) error {
+		return fmt.Errorf("simulated failure")
+	}
+	workerPool := worker.NewWorkerPool(3, "http://localhost:8080", "email_job", p)
+
+	workerPool.StartWorkerPool()
+
 	go startLeaseChecker(stopCh, brokerServer)
 
 	go func() {
@@ -42,6 +52,6 @@ func main() {
 	}()
 
 	<-quit
+	workerPool.StopWorkerPool()
 	close(stopCh)
-
 }

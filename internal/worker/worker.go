@@ -77,16 +77,15 @@ func (w *Worker) Start(stopCh <-chan struct{}) {
 				//else -> Process and Update the broker
 				err = w.Process(job)
 				if err != nil {
-					job.Status = models.StatusFailed
-					updateErr := w.updateJobRequest(job)
+					job.Status = models.StatusPending
+					fmt.Printf("error processing job: %s\n", err)
 
-					if updateErr != nil {
-						fmt.Printf("worker updateJobRequest error: %s\n", updateErr)
-					}
 					return
 				}
 
 				job.Status = models.StatusCompleted
+				job.CompletedAt = time.Now()
+				// update
 				updateErr := w.updateJobRequest(job)
 
 				if updateErr != nil {
