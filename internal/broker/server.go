@@ -90,10 +90,45 @@ func (bs *BrokerServer) UpdateJob(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (bs *BrokerServer) LeaseRenewal(w http.ResponseWriter, r *http.Request) {
+	queueName := r.PathValue("queueName")
+	jobId := r.PathValue("jobId")
+
+	var j models.Job
+
+	err := json.NewDecoder(r.Body).Decode(&j)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	id, err := uuid.Parse(jobId)
+	if err != nil {
+		http.Error(w, "uuid could not parse id", http.StatusBadRequest)
+		return
+	}
+
+	if id != j.Id {
+		http.Error(w, "Job ID in URL does not match job ID in body", http.StatusNotFound)
+		return
+	}
+
+	job, err := bs.queue.LeaseRenewal(queueName, j.Id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(job)
+}
+
 func (bs *BrokerServer) Start(port string) error {
 	http.HandleFunc("POST /queues/{queueName}/jobs", bs.AddJob)
 	http.HandleFunc("GET /queues/{queueName}/jobs", bs.RequestJob)
 	http.HandleFunc("PUT /queues/{queueName}/jobs/{jobId}", bs.UpdateJob)
+	http.HandleFunc("POST /queues/{queueName}/jobs/{jobId}/heartbeat", bs.LeaseRenewal)
 
 	err := http.ListenAndServe(port, nil)
 

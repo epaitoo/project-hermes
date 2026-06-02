@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -73,7 +74,7 @@ func TestRequestJob(t *testing.T) {
 
 func TestRequestJobEmptyQueue(t *testing.T) {
 	q := NewQueue()
-	expectedErrMsg := "No Pending Jobs found in Queue"
+	expectedErrMsg := ErrEmptyQueue.Error()
 
 	_, err := q.RequestJob("email")
 
@@ -191,6 +192,109 @@ func TestCheckForExpiredLeases(t *testing.T) {
 				t.Errorf("got %v, wanted %v", tt.expected.startedAt, res.StartedAt)
 			}
 
+		})
+	}
+}
+
+func TestLeaseRenewal(t *testing.T) {
+	const queueName = "email"
+
+	tests := []struct {
+		name        string
+		setup       func() (*Queue, uuid.UUID)
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "renews an in-progress job",
+			setup: func() (*Queue, uuid.UUID) {
+				q := NewQueue()
+				j := createJob()
+				j.Id = uuid.New()
+				j.Status = models.StatusInProgress
+				j.LeaseDuration = 30 * time.Second
+				j.LeaseExpiresAt = time.Now().Add(-time.Hour)
+				q.AddJob(queueName, j)
+				return q, j.Id
+			},
+		},
+		{
+			name: "unknown job id",
+			setup: func() (*Queue, uuid.UUID) {
+				q := NewQueue()
+				j := createJob()
+				j.Id = uuid.New()
+				q.AddJob(queueName, j)
+				return q, uuid.New()
+			},
+			wantErr:     true,
+			errContains: "not found",
+		},
+		{
+			name: "job not in progress",
+			setup: func() (*Queue, uuid.UUID) {
+				q := NewQueue()
+				j := createJob()
+				j.Id = uuid.New()
+				j.Status = models.StatusFailed
+				q.AddJob(queueName, j)
+				return q, j.Id
+			},
+			wantErr:     true,
+			errContains: "not in progress",
+		},
+		{
+			name: "renews target in a multi-job queue",
+			setup: func() (*Queue, uuid.UUID) {
+				q := NewQueue()
+
+				for i := 0; i < 2; i++ {
+					other := createJob()
+					other.Id = uuid.New()
+					q.AddJob(queueName, other)
+				}
+
+				target := createJob()
+				target.Id = uuid.New()
+				target.Status = models.StatusInProgress
+				target.LeaseDuration = 30 * time.Second
+				target.LeaseExpiresAt = time.Now().Add(-time.Hour)
+				q.AddJob(queueName, target)
+
+				return q, target.Id
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q, id := tt.setup()
+
+			before := time.Now()
+
+			_, err := q.LeaseRenewal(queueName, id)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got nil")
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			res, err := q.ReadJobById(queueName, id)
+			if err != nil {
+				t.Fatalf("could not re-read job: %v", err)
+			}
+			if !res.LeaseExpiresAt.After(before) {
+				t.Errorf("lease not renewed: expiry %v is not after %v", res.LeaseExpiresAt, before)
+			}
 		})
 	}
 }
