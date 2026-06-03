@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -33,7 +32,7 @@ func main() {
 	brokerServer := broker.NewBrokerServer()
 
 	p := func(j models.Job) error {
-		return fmt.Errorf("simulated failure")
+		return nil
 	}
 	workerPool := worker.NewWorkerPool(3, "http://localhost:8080", "email_job", p)
 
