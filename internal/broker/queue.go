@@ -12,6 +12,7 @@ import (
 var ErrJobNotFound = errors.New("No Job found in Queue")
 var ErrLeaseNotRenewable = errors.New("cannot renew lease not in progress")
 var ErrEmptyQueue = errors.New("queue is empty")
+var ErrJobNotInProgress = errors.New("job is not in progress")
 
 type Queue struct {
 	q  map[string][]models.Job
@@ -115,15 +116,7 @@ func (qu *Queue) CheckForExpiredLeases() {
 	for _, jobs := range qu.q {
 		for i := range jobs {
 			if time.Now().After(jobs[i].LeaseExpiresAt) && jobs[i].Status == models.StatusInProgress {
-				// check for RetryCount
-				if jobs[i].RetryCount >= jobs[i].MaxRetries {
-					jobs[i].Status = models.StatusFailed
-				} else {
-					jobs[i].Status = models.StatusPending
-					jobs[i].RetryCount++
-					jobs[i].LeaseExpiresAt = time.Time{}
-					jobs[i].StartedAt = time.Time{}
-				}
+				applyFailOrRetry(&jobs[i])
 			}
 		}
 	}
@@ -158,4 +151,37 @@ func (qu *Queue) LeaseRenewal(queueName string, jobID uuid.UUID) (models.Job, er
 
 	return j, ErrJobNotFound
 
+}
+
+func applyFailOrRetry(job *models.Job) {
+	if job.RetryCount >= job.MaxRetries {
+		job.Status = models.StatusFailed
+	} else {
+		job.Status = models.StatusPending
+		job.RetryCount++
+		job.LeaseExpiresAt = time.Time{}
+		job.StartedAt = time.Time{}
+	}
+}
+
+func (qu *Queue) FailOrRetry(jobID uuid.UUID) (*models.Job, error) {
+	qu.mu.Lock()
+	defer qu.mu.Unlock()
+	// find the job
+	var j *models.Job
+
+	for _, jobs := range qu.q {
+		for i := range jobs {
+			if jobs[i].Id == jobID {
+				if jobs[i].Status == models.StatusInProgress {
+					applyFailOrRetry(&jobs[i])
+					return &jobs[i], nil
+				} else {
+					return j, ErrJobNotInProgress
+				}
+			}
+		}
+	}
+
+	return j, ErrJobNotFound
 }

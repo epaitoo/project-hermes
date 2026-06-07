@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,7 +61,14 @@ func (w *Worker) Start(stopCh <-chan struct{}) {
 			func() {
 				// make http GET Request here
 				endpoint := fmt.Sprintf("%s/queues/%s/jobs", w.BrokerEndpoint, w.JobType)
-				resp, err := http.Get(endpoint)
+
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+				client := &http.Client{}
+				resp, err := client.Do(req)
+
 				if err != nil {
 					// handle error
 					w.logger.Error("error making HTTP request", "error", err)
@@ -72,6 +80,10 @@ func (w *Worker) Start(stopCh <-chan struct{}) {
 				if resp.StatusCode == http.StatusNotFound {
 					w.logger.Info("No Job Found")
 					return
+				}
+
+				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+					w.logger.Error("request failed", "status", resp.StatusCode)
 				}
 
 				var job models.Job
@@ -101,8 +113,11 @@ func (w *Worker) updateJobRequest(job models.Job) error {
 		return fmt.Errorf("error marshalling bodybytes: %w", err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	updateBody := bytes.NewBuffer(bodyBytes)
-	req, err := http.NewRequest(http.MethodPut, updateEndpoint, updateBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, updateEndpoint, updateBody)
 
 	if err != nil {
 		return fmt.Errorf("error making http put request: %w", err)
@@ -114,7 +129,7 @@ func (w *Worker) updateJobRequest(job models.Job) error {
 	res, err := client.Do(req)
 
 	if err != nil {
-		return fmt.Errorf("error reading response body: %w", err)
+		return fmt.Errorf("error, request failed: %w", err)
 	}
 
 	defer res.Body.Close()
@@ -125,6 +140,10 @@ func (w *Worker) updateJobRequest(job models.Job) error {
 
 	if res.StatusCode == http.StatusNotFound {
 		return NotFoundError
+	}
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("unexpected status: %s", res.Status)
 	}
 
 	resBody, err := io.ReadAll(res.Body)
@@ -148,8 +167,11 @@ func (w *Worker) sendHeartbeat(job models.Job) error {
 		return fmt.Errorf("error marshalling bodybytes: %w", err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	postBody := bytes.NewBuffer(bodyBytes)
-	req, err := http.NewRequest(http.MethodPost, endpoint, postBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, postBody)
 
 	if err != nil {
 		return fmt.Errorf("error making http post request: %w", err)
@@ -161,7 +183,7 @@ func (w *Worker) sendHeartbeat(job models.Job) error {
 	res, err := client.Do(req)
 
 	if err != nil {
-		return fmt.Errorf("error reading response body: %w", err)
+		return fmt.Errorf("error, request failed: %w", err)
 	}
 
 	defer res.Body.Close()
@@ -178,6 +200,10 @@ func (w *Worker) sendHeartbeat(job models.Job) error {
 		return LeaseLostErr
 	}
 
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("unexpected status: %s", res.Status)
+	}
+
 	resBody, err := io.ReadAll(res.Body)
 	if err != nil {
 		return fmt.Errorf("error %w", err)
@@ -188,7 +214,51 @@ func (w *Worker) sendHeartbeat(job models.Job) error {
 	w.logger.Info("msg", "response", string(resBody))
 
 	return nil
+}
 
+func (w *Worker) UpdateFailedJob(job models.Job) error {
+	endpoint := fmt.Sprintf("%s/jobs/%s/fail", w.BrokerEndpoint, job.Id)
+	bodyBytes, err := json.Marshal(job)
+
+	if err != nil {
+		return fmt.Errorf("error marshalling bodybytes: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	postBody := bytes.NewBuffer(bodyBytes)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, postBody)
+
+	if err != nil {
+		return fmt.Errorf("error making http post request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	res, err := client.Do(req)
+
+	if err != nil {
+		return fmt.Errorf("error, request failed: %w", err)
+	}
+
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("unexpected status: %s", res.Status)
+	}
+
+	resBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		return fmt.Errorf("error %w", err)
+	}
+
+	// print the updated job
+	w.logger.Info("status", "code", res.Status)
+	w.logger.Info("msg", "response", string(resBody))
+
+	return nil
 }
 
 func (w *Worker) ProcessJob(job models.Job, stopCh <-chan struct{}) {
@@ -213,8 +283,11 @@ func (w *Worker) ProcessJob(job models.Job, stopCh <-chan struct{}) {
 			}
 		case err := <-resultCh:
 			if err != nil {
-				job.Status = models.StatusPending
-				w.logger.Error("error processing job", "error", err)
+				failedErr := w.UpdateFailedJob(job)
+
+				if failedErr != nil {
+					w.logger.Error("UpdateFailedJob error", "error", failedErr)
+				}
 				return
 			}
 
