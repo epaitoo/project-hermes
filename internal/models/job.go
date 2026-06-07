@@ -28,4 +28,5 @@ type Job struct {
 	LeaseExpiresAt time.Time      `json:"lease_expires_at"`
 	MaxRetries     int            `json:"max_retries"`
 	RetryCount     int            `json:"retry_count"`
+	NextRunAt      time.Time      `json:"next_run_at"`
 }

@@ -2,6 +2,7 @@ package broker
 
 import (
 	"errors"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ var ErrJobNotFound = errors.New("No Job found in Queue")
 var ErrLeaseNotRenewable = errors.New("cannot renew lease not in progress")
 var ErrEmptyQueue = errors.New("queue is empty")
 var ErrJobNotInProgress = errors.New("job is not in progress")
+var ErrNoJobAvailable = errors.New("No Jobs Available")
 
 type Queue struct {
 	q  map[string][]models.Job
@@ -62,7 +64,7 @@ func (qu *Queue) RequestJob(queueName string) (models.Job, error) {
 	if ok {
 		if len(jobs) > 0 {
 			for i := range jobs {
-				if jobs[i].Status == models.StatusPending {
+				if jobs[i].Status == models.StatusPending && time.Now().After(jobs[i].NextRunAt) {
 					jobs[i].Status = models.StatusInProgress
 					now := time.Now()
 					jobs[i].StartedAt = now
@@ -78,7 +80,7 @@ func (qu *Queue) RequestJob(queueName string) (models.Job, error) {
 		}
 
 	}
-	return j, ErrEmptyQueue
+	return j, ErrNoJobAvailable
 }
 
 // update job
@@ -154,10 +156,22 @@ func (qu *Queue) LeaseRenewal(queueName string, jobID uuid.UUID) (models.Job, er
 }
 
 func applyFailOrRetry(job *models.Job) {
+
 	if job.RetryCount >= job.MaxRetries {
 		job.Status = models.StatusFailed
 	} else {
+
+		shift := min(job.RetryCount, 20)
+		delay := time.Duration(1<<shift) * time.Second
+		const maxDelay = 3 * time.Minute
+
+		delay = min(delay, maxDelay)
+
+		jitter := time.Duration(rand.Float64() * float64(delay) * 0.5)
+		backoff := delay + jitter
+
 		job.Status = models.StatusPending
+		job.NextRunAt = time.Now().Add(backoff)
 		job.RetryCount++
 		job.LeaseExpiresAt = time.Time{}
 		job.StartedAt = time.Time{}
