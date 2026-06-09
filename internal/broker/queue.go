@@ -17,14 +17,17 @@ var ErrJobNotInProgress = errors.New("job is not in progress")
 var ErrNoJobAvailable = errors.New("No Jobs Available")
 
 type Queue struct {
-	q  map[string][]models.Job
-	mu sync.RWMutex
+	q   map[string][]models.Job
+	dlq map[string][]models.Job
+	mu  sync.RWMutex
 }
 
 func NewQueue() *Queue {
 	m := make(map[string][]models.Job)
+	dq := make(map[string][]models.Job)
 	return &Queue{
-		q: m,
+		q:   m,
+		dlq: dq,
 	}
 }
 
@@ -110,17 +113,52 @@ func (qu *Queue) UpdateJob(queueName string, job models.Job) (models.Job, error)
 	return j, ErrJobNotFound
 }
 
+func applyFailOrRetry(job *models.Job) bool {
+	if job.RetryCount >= job.MaxRetries {
+		job.Status = models.StatusFailed
+		return true
+	} else {
+
+		shift := min(job.RetryCount, 20)
+		delay := time.Duration(1<<shift) * time.Second
+		const maxDelay = 3 * time.Minute
+
+		delay = min(delay, maxDelay)
+
+		jitter := time.Duration(rand.Float64() * float64(delay) * 0.5)
+		backoff := delay + jitter
+
+		job.Status = models.StatusPending
+		job.NextRunAt = time.Now().Add(backoff)
+		job.RetryCount++
+		job.LeaseExpiresAt = time.Time{}
+		job.StartedAt = time.Time{}
+		return false
+	}
+}
+
 // method to check for expired leases
 func (qu *Queue) CheckForExpiredLeases() {
 	qu.mu.Lock()
 	defer qu.mu.Unlock()
 
-	for _, jobs := range qu.q {
+	for k, jobs := range qu.q {
+		survivors := make([]models.Job, 0, len(jobs))
 		for i := range jobs {
+			job := &jobs[i]
 			if time.Now().After(jobs[i].LeaseExpiresAt) && jobs[i].Status == models.StatusInProgress {
-				applyFailOrRetry(&jobs[i])
+				dead := applyFailOrRetry(&jobs[i])
+				if dead {
+					qu.dlq[k] = append(qu.dlq[k], *job)
+				} else {
+					survivors = append(survivors, *job)
+				}
+			} else {
+				survivors = append(survivors, *job)
 			}
 		}
+
+		qu.q[k] = survivors
 	}
 }
 
@@ -155,47 +193,80 @@ func (qu *Queue) LeaseRenewal(queueName string, jobID uuid.UUID) (models.Job, er
 
 }
 
-func applyFailOrRetry(job *models.Job) {
-
-	if job.RetryCount >= job.MaxRetries {
-		job.Status = models.StatusFailed
-	} else {
-
-		shift := min(job.RetryCount, 20)
-		delay := time.Duration(1<<shift) * time.Second
-		const maxDelay = 3 * time.Minute
-
-		delay = min(delay, maxDelay)
-
-		jitter := time.Duration(rand.Float64() * float64(delay) * 0.5)
-		backoff := delay + jitter
-
-		job.Status = models.StatusPending
-		job.NextRunAt = time.Now().Add(backoff)
-		job.RetryCount++
-		job.LeaseExpiresAt = time.Time{}
-		job.StartedAt = time.Time{}
-	}
-}
-
 func (qu *Queue) FailOrRetry(jobID uuid.UUID) (*models.Job, error) {
 	qu.mu.Lock()
 	defer qu.mu.Unlock()
 	// find the job
 	var j *models.Job
 
-	for _, jobs := range qu.q {
+	for k, jobs := range qu.q {
 		for i := range jobs {
 			if jobs[i].Id == jobID {
-				if jobs[i].Status == models.StatusInProgress {
-					applyFailOrRetry(&jobs[i])
-					return &jobs[i], nil
-				} else {
+				if jobs[i].Status != models.StatusInProgress {
 					return j, ErrJobNotInProgress
 				}
+				if !applyFailOrRetry(&jobs[i]) {
+					return &jobs[i], nil
+				}
+				deadJob := jobs[i]
+				qu.dlq[k] = append(qu.dlq[k], deadJob)
+				qu.q[k] = append(jobs[:i], jobs[i+1:]...)
+				return &deadJob, nil
 			}
 		}
 	}
 
 	return j, ErrJobNotFound
+}
+
+// dlq Operations
+func (qu *Queue) ListDeadLetter(queueName string) ([]models.Job, error) {
+	qu.mu.RLock()
+	defer qu.mu.RUnlock()
+
+	jobs := qu.dlq[queueName]
+	out := make([]models.Job, len(jobs))
+	copy(out, jobs)
+	return out, nil
+}
+
+func (qu *Queue) RedriveJob(queueName string, jobId uuid.UUID) (models.Job, error) {
+	qu.mu.Lock()
+	defer qu.mu.Unlock()
+
+	var j models.Job
+
+	// find the job
+	dlqJobs := qu.dlq[queueName]
+
+	for i := range dlqJobs {
+		if dlqJobs[i].Id == jobId {
+			dlqJobs[i].Status = models.StatusPending
+			dlqJobs[i].RetryCount = 0
+			dlqJobs[i].NextRunAt = time.Time{}
+
+			redriveJob := dlqJobs[i]
+			qu.q[queueName] = append(qu.q[queueName], redriveJob)
+			qu.dlq[queueName] = append(dlqJobs[:i], dlqJobs[i+1:]...)
+			return redriveJob, nil
+		}
+	}
+
+	return j, ErrJobNotFound
+}
+
+func (qu *Queue) DiscardDeadJob(queueName string, jobId uuid.UUID) error {
+	qu.mu.Lock()
+	defer qu.mu.Unlock()
+	// find the job
+	dlqJobs := qu.dlq[queueName]
+
+	for i := range dlqJobs {
+		if dlqJobs[i].Id == jobId {
+			qu.dlq[queueName] = append(dlqJobs[:i], dlqJobs[i+1:]...)
+			return nil
+		}
+	}
+
+	return ErrJobNotFound
 }
