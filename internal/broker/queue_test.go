@@ -1,13 +1,25 @@
 package broker
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/epaitoo/hermes/internal/models"
+	"github.com/epaitoo/hermes/internal/wal"
 	"github.com/google/uuid"
 )
+
+func newTestQueue(t *testing.T) *Queue {
+	t.Helper()
+	w, err := wal.Open(filepath.Join(t.TempDir(), "test.wal"))
+
+	if err != nil {
+		t.Fatalf("opening test wal: %v", err)
+	}
+	return NewQueue(w)
+}
 
 func createJob() models.Job {
 	return models.Job{
@@ -19,10 +31,13 @@ func createJob() models.Job {
 }
 
 func TestAddJob(t *testing.T) {
-	q := NewQueue()
+	q := newTestQueue(t)
 	j := createJob()
 
-	q.AddJob("email", j)
+	if err := q.AddJob("email", j); err != nil {
+		t.Fatalf("AddJob returned unexpected error: %v", err)
+	}
+
 	jobs, _ := q.q["email"]
 	got := len(jobs)
 	want := 1
@@ -49,9 +64,11 @@ func TestAddJob(t *testing.T) {
 }
 
 func TestRequestJob(t *testing.T) {
-	q := NewQueue()
+	q := newTestQueue(t)
 	j := createJob()
-	q.AddJob("email", j)
+	if err := q.AddJob("email", j); err != nil {
+		t.Fatalf("AddJob returned unexpected error: %v", err)
+	}
 
 	res, err := q.RequestJob("email")
 
@@ -73,7 +90,7 @@ func TestRequestJob(t *testing.T) {
 }
 
 func TestRequestJobEmptyQueue(t *testing.T) {
-	q := NewQueue()
+	q := newTestQueue(t)
 	expectedErrMsg := ErrEmptyQueue.Error()
 
 	_, err := q.RequestJob("email")
@@ -84,10 +101,12 @@ func TestRequestJobEmptyQueue(t *testing.T) {
 }
 
 func TestUpdateJob(t *testing.T) {
-	q := NewQueue()
+	q := newTestQueue(t)
 	j := createJob()
 	j.Id = uuid.New()
-	q.AddJob("email", j)
+	if err := q.AddJob("email", j); err != nil {
+		t.Fatalf("AddJob returned unexpected error: %v", err)
+	}
 
 	res, _ := q.RequestJob("email")
 	res.Status = models.StatusCompleted
@@ -162,7 +181,7 @@ func TestCheckForExpiredLeases(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		q := NewQueue()
+		q := newTestQueue(t)
 		j := createJob()
 		j.Id = uuid.New()
 		j.Status = tt.input.jobStatus
@@ -171,7 +190,9 @@ func TestCheckForExpiredLeases(t *testing.T) {
 		j.MaxRetries = tt.input.maxRetries
 
 		t.Run(tt.name, func(t *testing.T) {
-			q.AddJob("email", j)
+			if err := q.AddJob("email", j); err != nil {
+				t.Fatalf("AddJob returned unexpected error: %v", err)
+			}
 
 			q.CheckForExpiredLeases()
 			res, _ := q.ReadJobById("email", j.Id)
@@ -201,30 +222,34 @@ func TestLeaseRenewal(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		setup       func() (*Queue, uuid.UUID)
+		setup       func(t *testing.T) (*Queue, uuid.UUID)
 		wantErr     bool
 		errContains string
 	}{
 		{
 			name: "renews an in-progress job",
-			setup: func() (*Queue, uuid.UUID) {
-				q := NewQueue()
+			setup: func(t *testing.T) (*Queue, uuid.UUID) {
+				q := newTestQueue(t)
 				j := createJob()
 				j.Id = uuid.New()
 				j.Status = models.StatusInProgress
 				j.LeaseDuration = 30 * time.Second
 				j.LeaseExpiresAt = time.Now().Add(-time.Hour)
-				q.AddJob(queueName, j)
+				if err := q.AddJob(queueName, j); err != nil {
+					t.Fatalf("AddJob returned unexpected error: %v", err)
+				}
 				return q, j.Id
 			},
 		},
 		{
 			name: "unknown job id",
-			setup: func() (*Queue, uuid.UUID) {
-				q := NewQueue()
+			setup: func(t *testing.T) (*Queue, uuid.UUID) {
+				q := newTestQueue(t)
 				j := createJob()
 				j.Id = uuid.New()
-				q.AddJob(queueName, j)
+				if err := q.AddJob(queueName, j); err != nil {
+					t.Fatalf("AddJob returned unexpected error: %v", err)
+				}
 				return q, uuid.New()
 			},
 			wantErr:     true,
@@ -232,12 +257,14 @@ func TestLeaseRenewal(t *testing.T) {
 		},
 		{
 			name: "job not in progress",
-			setup: func() (*Queue, uuid.UUID) {
-				q := NewQueue()
+			setup: func(t *testing.T) (*Queue, uuid.UUID) {
+				q := newTestQueue(t)
 				j := createJob()
 				j.Id = uuid.New()
 				j.Status = models.StatusFailed
-				q.AddJob(queueName, j)
+				if err := q.AddJob(queueName, j); err != nil {
+					t.Fatalf("AddJob returned unexpected error: %v", err)
+				}
 				return q, j.Id
 			},
 			wantErr:     true,
@@ -245,13 +272,16 @@ func TestLeaseRenewal(t *testing.T) {
 		},
 		{
 			name: "renews target in a multi-job queue",
-			setup: func() (*Queue, uuid.UUID) {
-				q := NewQueue()
+			setup: func(t *testing.T) (*Queue, uuid.UUID) {
+				q := newTestQueue(t)
 
 				for i := 0; i < 2; i++ {
 					other := createJob()
 					other.Id = uuid.New()
-					q.AddJob(queueName, other)
+					if err := q.AddJob(queueName, other); err != nil {
+						t.Fatalf("AddJob returned unexpected error: %v", err)
+					}
+
 				}
 
 				target := createJob()
@@ -259,7 +289,9 @@ func TestLeaseRenewal(t *testing.T) {
 				target.Status = models.StatusInProgress
 				target.LeaseDuration = 30 * time.Second
 				target.LeaseExpiresAt = time.Now().Add(-time.Hour)
-				q.AddJob(queueName, target)
+				if err := q.AddJob(queueName, target); err != nil {
+					t.Fatalf("AddJob returned unexpected error: %v", err)
+				}
 
 				return q, target.Id
 			},
@@ -268,7 +300,7 @@ func TestLeaseRenewal(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			q, id := tt.setup()
+			q, id := tt.setup(t)
 
 			before := time.Now()
 

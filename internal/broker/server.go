@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/epaitoo/hermes/internal/models"
+	"github.com/epaitoo/hermes/internal/wal"
 	"github.com/google/uuid"
 )
 
@@ -19,11 +20,15 @@ type BrokerServer struct {
 // GET  /queues/{queueName}/jobs        - RequestJob
 // PUT  /queues/{queueName}/jobs/{jobId} - UpdateJob
 
-func NewBrokerServer() *BrokerServer {
-	q := NewQueue()
-	return &BrokerServer{
-		queue: q,
+func NewBrokerServer() (*BrokerServer, error) {
+	w, err := wal.Open("hermes.wal")
+
+	if err != nil {
+		return nil, err
 	}
+	q := NewQueue(w)
+
+	return &BrokerServer{queue: q}, nil
 }
 
 func (bs *BrokerServer) AddJob(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +46,11 @@ func (bs *BrokerServer) AddJob(w http.ResponseWriter, r *http.Request) {
 	job.Status = models.StatusPending
 	job.CreatedAt = time.Now()
 
-	bs.queue.AddJob(queueName, job)
+	err = bs.queue.AddJob(queueName, job)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(job)
