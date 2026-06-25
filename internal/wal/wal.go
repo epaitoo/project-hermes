@@ -45,9 +45,13 @@ func (w *WAL) Replay() ([]*Record, error) {
 
 	for {
 		rec, err := Decode(f)
-		if errors.Is(err, io.EOF) {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrChecksumMismatch) {
 			break
 		}
+
+		// a torn or corrupt record can only be the last one,
+		// since we append and fsync each write
+		// so stopping here and keeping prior records is safe
 
 		if err != nil {
 			return nil, err

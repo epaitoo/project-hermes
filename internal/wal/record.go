@@ -3,12 +3,16 @@ package wal
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"hash/crc32"
 	"io"
 	"time"
 
 	"github.com/epaitoo/hermes/internal/models"
 	"github.com/google/uuid"
 )
+
+var ErrChecksumMismatch = errors.New("wal: record checksum mismatch")
 
 type RecordType uint8
 
@@ -58,34 +62,48 @@ type JobDiscardPayload struct {
 }
 
 func (rec *Record) Encode() []byte {
-	length := 1 + len(rec.Payload)
-	buf := make([]byte, 0, 4+length)
+
+	var contents []byte
+	contents = append(contents, byte(rec.Type))
+	contents = append(contents, rec.Payload...)
+
+	length := len(contents)
+	checkSum := crc32.ChecksumIEEE(contents)
+
+	buf := make([]byte, 0, 8+length)
 	buf = binary.BigEndian.AppendUint32(buf, uint32(length))
-	buf = append(buf, byte(rec.Type))
-	buf = append(buf, rec.Payload...)
+	buf = binary.BigEndian.AppendUint32(buf, uint32(checkSum))
+	buf = append(buf, contents...)
 	return buf
 }
 
 func Decode(r io.Reader) (*Record, error) {
-	lengthBuf := make([]byte, 4)
+	lengthBuf := make([]byte, 8)
 	_, err := io.ReadFull(r, lengthBuf)
 	if err != nil {
 		return nil, err
 	}
 
-	length := binary.BigEndian.Uint32(lengthBuf)
+	length := binary.BigEndian.Uint32(lengthBuf[0:4])
+	wantChecksum := binary.BigEndian.Uint32(lengthBuf[4:8])
 
 	//  holds the record body
-	buf := make([]byte, length)
+	content := make([]byte, length)
 
-	_, err = io.ReadFull(r, buf)
+	_, err = io.ReadFull(r, content)
 	if err != nil {
 		return nil, err
 	}
 
+	// verify checksum
+	got := crc32.ChecksumIEEE(content)
+	if got != wantChecksum {
+		return nil, ErrChecksumMismatch
+	}
+
 	// extract type and payload from byte
-	recordType := RecordType(buf[0])
-	payload := buf[1:]
+	recordType := RecordType(content[0])
+	payload := content[1:]
 
 	return &Record{Type: recordType, Payload: payload}, nil
 
