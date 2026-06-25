@@ -28,6 +28,10 @@ func NewBrokerServer() (*BrokerServer, error) {
 	}
 	q := NewQueue(w)
 
+	if err := q.Recover(); err != nil {
+		return nil, err
+	}
+
 	return &BrokerServer{queue: q}, nil
 }
 
@@ -265,4 +269,8 @@ func (bs *BrokerServer) Start(port string) error {
 
 func (bs *BrokerServer) StartLeaseChecker() {
 	bs.queue.CheckForExpiredLeases()
+}
+
+func (bs *BrokerServer) Close() error {
+	return bs.queue.wal.Close()
 }

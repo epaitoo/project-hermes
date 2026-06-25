@@ -91,7 +91,7 @@ func TestRequestJob(t *testing.T) {
 
 func TestRequestJobEmptyQueue(t *testing.T) {
 	q := newTestQueue(t)
-	expectedErrMsg := ErrEmptyQueue.Error()
+	expectedErrMsg := ErrNoJobAvailable.Error()
 
 	_, err := q.RequestJob("email")
 
@@ -148,6 +148,7 @@ func TestCheckForExpiredLeases(t *testing.T) {
 		retryCount     int
 		leaseExpiresAt time.Time
 		startedAt      time.Time
+		inDLQ          bool
 	}
 
 	type jobInputs struct {
@@ -166,7 +167,7 @@ func TestCheckForExpiredLeases(t *testing.T) {
 	}{
 		{"StatusInProgress_and_lease expired",
 			jobInputs{jobStatus: models.StatusInProgress, leaseExpiresAt: expiredLease, retryCount: 3, maxRetries: 3},
-			expectedOutcomes{jobStatus: models.StatusFailed, retryCount: 3, leaseExpiresAt: expiredLease}},
+			expectedOutcomes{jobStatus: models.StatusFailed, retryCount: 3, leaseExpiresAt: expiredLease, inDLQ: true}},
 
 		{"RetryCount_<_MaxRetries", jobInputs{jobStatus: models.StatusInProgress, leaseExpiresAt: expiredLease, retryCount: 0, maxRetries: 4},
 			expectedOutcomes{jobStatus: models.StatusPending, retryCount: 1, leaseExpiresAt: time.Time{}, startedAt: time.Time{}}},
@@ -195,22 +196,34 @@ func TestCheckForExpiredLeases(t *testing.T) {
 			}
 
 			q.CheckForExpiredLeases()
-			res, _ := q.ReadJobById("email", j.Id)
+
+			var res models.Job
+			if tt.expected.inDLQ {
+				dlq, _ := q.ListDeadLetter("email")
+				for _, dj := range dlq {
+					if dj.Id == j.Id {
+						res = dj
+						break
+					}
+				}
+			} else {
+				res, _ = q.ReadJobById("email", j.Id)
+			}
 
 			if res.Status != tt.expected.jobStatus {
-				t.Errorf("got %v, wanted %v", tt.expected.jobStatus, res.Status)
+				t.Errorf("got %v, wanted %v", res.Status, tt.expected.jobStatus)
 			}
 
 			if res.RetryCount != tt.expected.retryCount {
-				t.Errorf("got %v, wanted %v", tt.expected.retryCount, res.RetryCount)
+				t.Errorf("got %v, wanted %v", res.RetryCount, tt.expected.retryCount)
 			}
 
 			if res.LeaseExpiresAt != tt.expected.leaseExpiresAt {
-				t.Errorf("got %v, wanted %v", tt.expected.leaseExpiresAt, res.LeaseExpiresAt)
+				t.Errorf("got %v, wanted %v", res.LeaseExpiresAt, tt.expected.leaseExpiresAt)
 			}
 
 			if res.StartedAt != tt.expected.startedAt {
-				t.Errorf("got %v, wanted %v", tt.expected.startedAt, res.StartedAt)
+				t.Errorf("got %v, wanted %v", res.StartedAt, tt.expected.startedAt)
 			}
 
 		})
@@ -328,5 +341,45 @@ func TestLeaseRenewal(t *testing.T) {
 				t.Errorf("lease not renewed: expiry %v is not after %v", res.LeaseExpiresAt, before)
 			}
 		})
+	}
+}
+
+func TestRecover(t *testing.T) {
+	walPath := filepath.Join(t.TempDir(), "recover.wal")
+
+	// First "process": open a WAL, add jobs, then close it.
+	w1, err := wal.Open(walPath)
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+	q1 := NewQueue(w1)
+
+	j := createJob()
+	j.Id = uuid.New()
+	if err := q1.AddJob("email", j); err != nil {
+		t.Fatalf("add job: %v", err)
+	}
+	w1.Close() // simulate the process dying
+
+	// Second "process": fresh queue, same WAL path, recover.
+	w2, err := wal.Open(walPath)
+	if err != nil {
+		t.Fatalf("reopen wal: %v", err)
+	}
+	q2 := NewQueue(w2)
+	if err := q2.Recover(); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	// The job written before the "crash" should be back.
+	got, err := q2.ReadJobById("email", j.Id)
+	if err != nil {
+		t.Fatalf("job not recovered: %v", err)
+	}
+	if got.Id != j.Id {
+		t.Errorf("got id %v, want %v", got.Id, j.Id)
+	}
+	if got.Status != models.StatusPending {
+		t.Errorf("recovered job status = %v, want pending", got.Status)
 	}
 }

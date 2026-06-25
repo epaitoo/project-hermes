@@ -18,8 +18,6 @@ func Open(path string) (*WAL, error) {
 		return nil, err
 	}
 
-	defer file.Close()
-
 	return &WAL{file: file, path: path}, nil
 }
 
@@ -30,8 +28,6 @@ func (w *WAL) Append(rec *Record) error {
 	if err != nil {
 		return err
 	}
-
-	defer w.file.Close()
 
 	return w.file.Sync()
 }
@@ -61,4 +57,8 @@ func (w *WAL) Replay() ([]*Record, error) {
 	}
 
 	return r, nil
+}
+
+func (w *WAL) Close() error {
+	return w.file.Close()
 }

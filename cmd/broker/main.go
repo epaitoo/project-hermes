@@ -57,4 +57,9 @@ func main() {
 	<-quit
 	workerPool.StopWorkerPool()
 	close(stopCh)
+
+	if err := brokerServer.Close(); err != nil {
+		log.Printf("error closing broker: %v", err)
+	}
+
 }

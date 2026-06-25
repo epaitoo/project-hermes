@@ -1,9 +1,12 @@
 package broker
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"time"
 
@@ -391,4 +394,149 @@ func (qu *Queue) DiscardDeadJob(queueName string, jobId uuid.UUID) error {
 	}
 
 	return ErrJobNotFound
+}
+
+func (qu *Queue) findJobByID(jobID uuid.UUID) (string, int, bool) {
+	for queueName, jobs := range qu.q {
+		for i := range jobs {
+			if jobs[i].Id == jobID {
+				return queueName, i, true
+			}
+		}
+	}
+
+	return "", 0, false
+}
+
+func (qu *Queue) Recover() error {
+	qu.mu.Lock()
+	defer qu.mu.Unlock()
+
+	records, err := qu.wal.Replay()
+
+	if err != nil {
+		return err
+	}
+
+	for _, rec := range records {
+		switch rec.Type {
+
+		case wal.RecordCreated:
+			var p wal.JobCreatedPayload
+			if err := json.Unmarshal(rec.Payload, &p); err != nil {
+				return err
+			}
+
+			qu.q[p.QueueName] = append(qu.q[p.QueueName], p.Job)
+
+		case wal.RecordFailed:
+			var p wal.JobFailedPayload
+			if err := json.Unmarshal(rec.Payload, &p); err != nil {
+				return err
+			}
+
+			queueName, idx, ok := qu.findJobByID(p.JobID)
+			if !ok {
+				return fmt.Errorf("recover: job %s from RecordFailed not found", p.JobID)
+			}
+			qu.q[queueName][idx].RetryCount = p.RetryCount
+			qu.q[queueName][idx].NextRunAt = p.NextRunAt
+			qu.q[queueName][idx].Status = models.StatusPending
+
+		case wal.RecordDone:
+			var p wal.JobDonePayload
+			if err := json.Unmarshal(rec.Payload, &p); err != nil {
+				return err
+			}
+
+			qJobs, ok := qu.q[p.QueueName]
+
+			if !ok {
+				return fmt.Errorf("recover: queue %s missing for RecordDone", p.QueueName)
+			}
+
+			for i := range qJobs {
+				if qJobs[i].Id == p.JobID {
+					qu.q[p.QueueName] = slices.Delete(qJobs, i, i+1)
+					break
+				}
+			}
+
+		case wal.RecordMovedToDLQ:
+			var p wal.JobMovedToDLQPayload
+			if err := json.Unmarshal(rec.Payload, &p); err != nil {
+				return err
+			}
+
+			qJobs, ok := qu.q[p.QueueName]
+
+			if !ok {
+				return fmt.Errorf("recover: queue %s missing for RecordMovedToDLQ", p.QueueName)
+			}
+
+			for i := range qJobs {
+				if qJobs[i].Id == p.JobID {
+					job := qJobs[i]
+					qu.q[p.QueueName] = slices.Delete(qJobs, i, i+1)
+					qu.dlq[p.QueueName] = append(qu.dlq[p.QueueName], job)
+					break
+				}
+			}
+
+		case wal.RecordRedrive:
+			var p wal.JobRedrivePayload
+
+			if err := json.Unmarshal(rec.Payload, &p); err != nil {
+				return err
+			}
+
+			dlqJobs, ok := qu.dlq[p.QueueName]
+
+			if !ok {
+				return fmt.Errorf("recover: queue %s missing for RecordRedrive", p.QueueName)
+			}
+
+			for i := range dlqJobs {
+				if dlqJobs[i].Id == p.JobID {
+					job := dlqJobs[i]
+					qu.q[p.QueueName] = append(qu.q[p.QueueName], job)
+					qu.dlq[p.QueueName] = slices.Delete(dlqJobs, i, i+1)
+					break
+				}
+			}
+
+		case wal.RecordDiscard:
+			var p wal.JobDiscardPayload
+			if err := json.Unmarshal(rec.Payload, &p); err != nil {
+				return err
+			}
+
+			dlqJobs, ok := qu.dlq[p.QueueName]
+
+			if !ok {
+				return fmt.Errorf("recover: queue %s missing for RecordDiscard", p.QueueName)
+			}
+
+			for i := range dlqJobs {
+				if dlqJobs[i].Id == p.JobID {
+					qu.dlq[p.QueueName] = slices.Delete(dlqJobs, i, i+1)
+					break
+				}
+			}
+
+		}
+
+	}
+
+	for queueName, jobs := range qu.q {
+		for i := range jobs {
+			if jobs[i].Status == models.StatusInProgress {
+				qu.q[queueName][i].Status = models.StatusPending
+				qu.q[queueName][i].LeaseExpiresAt = time.Time{}
+				qu.q[queueName][i].StartedAt = time.Time{}
+			}
+		}
+	}
+
+	return nil
 }
