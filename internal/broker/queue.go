@@ -289,8 +289,9 @@ func (qu *Queue) FailOrRetry(jobID uuid.UUID) (*models.Job, error) {
 
 					deadJob := updated
 
-					qu.q[k] = append(jobs[:i], jobs[i+1:]...)
+					qu.q[k] = slices.Delete(jobs, i, i+1)
 					qu.dlq[k] = append(qu.dlq[k], deadJob)
+
 					return &deadJob, nil
 
 				}
@@ -360,7 +361,7 @@ func (qu *Queue) RedriveJob(queueName string, jobId uuid.UUID) (models.Job, erro
 
 			redriveJob := dlqJobs[i]
 			qu.q[queueName] = append(qu.q[queueName], redriveJob)
-			qu.dlq[queueName] = append(dlqJobs[:i], dlqJobs[i+1:]...)
+			qu.dlq[queueName] = slices.Delete(dlqJobs, i, i+1)
 			return redriveJob, nil
 		}
 	}
@@ -388,7 +389,7 @@ func (qu *Queue) DiscardDeadJob(queueName string, jobId uuid.UUID) error {
 				return err
 			}
 
-			qu.dlq[queueName] = append(dlqJobs[:i], dlqJobs[i+1:]...)
+			qu.dlq[queueName] = slices.Delete(dlqJobs, i, i+1)
 			return nil
 		}
 	}

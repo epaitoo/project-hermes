@@ -59,3 +59,53 @@ func TestReplayTornTail(t *testing.T) {
 		t.Errorf("got %d records, want 2", len(recs))
 	}
 }
+
+func TestReplayCorruptedTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "corrupt.wal")
+
+	w, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		rec, err := NewRecord(RecordCreated, JobCreatedPayload{
+			QueueName: "email",
+			Job:       models.Job{Id: uuid.New(), Name: "job", Status: models.StatusPending},
+		})
+		if err != nil {
+			t.Fatalf("new record: %v", err)
+		}
+		if err := w.Append(rec); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	w.Close()
+
+	// Simulate corruption (not truncation): flip the very last byte of the
+	// file. The record stays full-length, so Decode reads it fine, but the
+	// recomputed checksum won't match -> ErrChecksumMismatch.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	data[len(data)-1] ^= 0xFF // flip all bits of the last byte
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	// Replay should drop the corrupted tail and keep the 2 good records.
+	w2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer w2.Close()
+
+	recs, err := w2.Replay()
+	if err != nil {
+		t.Fatalf("replay returned error on corrupted tail, want nil: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Errorf("got %d records, want 2", len(recs))
+	}
+}
