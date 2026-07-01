@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/epaitoo/hermes/internal/metrics"
 	"github.com/epaitoo/hermes/internal/models"
 	"github.com/epaitoo/hermes/internal/wal"
 	"github.com/google/uuid"
@@ -22,19 +23,21 @@ var ErrJobNotInProgress = errors.New("job is not in progress")
 var ErrNoJobAvailable = errors.New("No Jobs Available")
 
 type Queue struct {
-	q   map[string][]models.Job
-	dlq map[string][]models.Job
-	mu  sync.RWMutex
-	wal *wal.WAL
+	q       map[string][]models.Job
+	dlq     map[string][]models.Job
+	mu      sync.RWMutex
+	wal     *wal.WAL
+	metrics *metrics.Metrics
 }
 
-func NewQueue(w *wal.WAL) *Queue {
-	m := make(map[string][]models.Job)
+func NewQueue(w *wal.WAL, m *metrics.Metrics) *Queue {
+	q := make(map[string][]models.Job)
 	dq := make(map[string][]models.Job)
 	return &Queue{
-		q:   m,
-		dlq: dq,
-		wal: w,
+		q:       q,
+		dlq:     dq,
+		wal:     w,
+		metrics: m,
 	}
 }
 
@@ -52,6 +55,8 @@ func (qu *Queue) AddJob(queueName string, job models.Job) error {
 	if err != nil {
 		return err
 	}
+
+	qu.metrics.JobSubmitted()
 
 	qu.q[queueName] = append(qu.q[queueName], job)
 
@@ -97,6 +102,8 @@ func (qu *Queue) RequestJob(queueName string) (models.Job, error) {
 					}
 					jobs[i].LeaseExpiresAt = now.Add(jobs[i].LeaseDuration)
 
+					qu.metrics.JobLeased()
+
 					return jobs[i], nil
 				}
 			}
@@ -131,6 +138,8 @@ func (qu *Queue) UpdateJob(queueName string, job models.Job) (models.Job, error)
 						if err != nil {
 							return j, err
 						}
+
+						qu.metrics.JobCompleted()
 					}
 
 					// update the job
@@ -198,6 +207,8 @@ func (qu *Queue) CheckForExpiredLeases() {
 						continue
 					}
 
+					qu.metrics.JobDeadLettered()
+
 					jobs[i] = updated
 					qu.dlq[k] = append(qu.dlq[k], jobs[i])
 				} else {
@@ -218,6 +229,8 @@ func (qu *Queue) CheckForExpiredLeases() {
 						survivors = append(survivors, jobs[i])
 						continue
 					}
+
+					qu.metrics.JobRetried()
 
 					jobs[i] = updated
 					survivors = append(survivors, jobs[i])
@@ -287,6 +300,8 @@ func (qu *Queue) FailOrRetry(jobID uuid.UUID) (*models.Job, error) {
 						return nil, err
 					}
 
+					qu.metrics.JobDeadLettered()
+
 					deadJob := updated
 
 					qu.q[k] = slices.Delete(jobs, i, i+1)
@@ -310,6 +325,8 @@ func (qu *Queue) FailOrRetry(jobID uuid.UUID) (*models.Job, error) {
 				if err != nil {
 					return nil, err
 				}
+
+				qu.metrics.JobRetried()
 
 				jobs[i] = updated
 
@@ -355,6 +372,8 @@ func (qu *Queue) RedriveJob(queueName string, jobId uuid.UUID) (models.Job, erro
 				return j, err
 			}
 
+			qu.metrics.DLQRedriven()
+
 			dlqJobs[i].Status = models.StatusPending
 			dlqJobs[i].RetryCount = 0
 			dlqJobs[i].NextRunAt = time.Time{}
@@ -388,6 +407,8 @@ func (qu *Queue) DiscardDeadJob(queueName string, jobId uuid.UUID) error {
 			if err != nil {
 				return err
 			}
+
+			qu.metrics.DLQDiscarded()
 
 			qu.dlq[queueName] = slices.Delete(dlqJobs, i, i+1)
 			return nil
@@ -529,6 +550,7 @@ func (qu *Queue) Recover() error {
 
 	}
 
+	// reset loop
 	for queueName, jobs := range qu.q {
 		for i := range jobs {
 			if jobs[i].Status == models.StatusInProgress {
@@ -538,6 +560,19 @@ func (qu *Queue) Recover() error {
 			}
 		}
 	}
+
+	// after the reset loop, every job in qu.q is pending
+	var pending int64
+	for _, jobs := range qu.q {
+		pending += int64(len(jobs))
+	}
+	qu.metrics.SetPending(pending)
+
+	var dlq int64
+	for _, jobs := range qu.dlq {
+		dlq += int64(len(jobs))
+	}
+	qu.metrics.SetDLQSize(dlq)
 
 	return nil
 }

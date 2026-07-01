@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/epaitoo/hermes/internal/metrics"
 	"github.com/epaitoo/hermes/internal/models"
 	"github.com/epaitoo/hermes/internal/wal"
 	"github.com/google/uuid"
@@ -18,7 +19,7 @@ func newTestQueue(t *testing.T) *Queue {
 	if err != nil {
 		t.Fatalf("opening test wal: %v", err)
 	}
-	return NewQueue(w)
+	return NewQueue(w, &metrics.Metrics{})
 }
 
 func createJob() models.Job {
@@ -352,7 +353,7 @@ func TestRecover(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open wal: %v", err)
 	}
-	q1 := NewQueue(w1)
+	q1 := NewQueue(w1, &metrics.Metrics{})
 
 	j := createJob()
 	j.Id = uuid.New()
@@ -366,7 +367,7 @@ func TestRecover(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen wal: %v", err)
 	}
-	q2 := NewQueue(w2)
+	q2 := NewQueue(w2, &metrics.Metrics{})
 	if err := q2.Recover(); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
