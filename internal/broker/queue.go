@@ -196,13 +196,21 @@ func (qu *Queue) CheckForExpiredLeases() {
 					rec, err := wal.NewRecord(wal.RecordMovedToDLQ, wal.JobMovedToDLQPayload{JobID: updated.Id, QueueName: k})
 
 					if err != nil {
-						slog.Error("wal newrecord checkforexpiredleases error", "error", err)
+						slog.Error("failed to create DLQ record",
+							"error", err,
+							"job_id", jobs[i].Id,
+							"queue", k,
+							"attempts", jobs[i].RetryCount)
 						survivors = append(survivors, jobs[i])
 						continue
 					}
 
 					if err := qu.wal.Append(rec); err != nil {
-						slog.Error("wal append checkforexpiredleases error", "error", err)
+						slog.Error("failed to persist DLQ record to WAL",
+							"error", err,
+							"job_id", jobs[i].Id,
+							"queue", k,
+							"attempts", jobs[i].RetryCount)
 						survivors = append(survivors, jobs[i])
 						continue
 					}
@@ -219,13 +227,21 @@ func (qu *Queue) CheckForExpiredLeases() {
 					})
 
 					if err != nil {
-						slog.Error("wal newrecord checkforexpiredleases error", "error", err)
+						slog.Error("failed to create lease expiry record",
+							"error", err,
+							"job_id", jobs[i].Id,
+							"queue", k,
+							"attempts", jobs[i].RetryCount)
 						survivors = append(survivors, jobs[i])
 						continue
 					}
 
 					if err := qu.wal.Append(rec); err != nil {
-						slog.Error("wal append checkforexpiredleases error", "error", err)
+						slog.Error("failed to persist lease expiry to WAL",
+							"error", err,
+							"job_id", jobs[i].Id,
+							"queue", k,
+							"attempts", jobs[i].RetryCount)
 						survivors = append(survivors, jobs[i])
 						continue
 					}

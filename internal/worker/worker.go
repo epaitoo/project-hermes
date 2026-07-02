@@ -71,31 +71,30 @@ func (w *Worker) Start(stopCh <-chan struct{}) {
 
 				if err != nil {
 					// handle error
-					w.logger.Error("error making HTTP request", "error", err)
+					w.logger.Error("failed to fetch job from broker", "error", err, "job_type", w.JobType)
 					return
 				}
 
 				defer resp.Body.Close()
 
 				if resp.StatusCode == http.StatusNotFound {
-					w.logger.Info("No Job Found")
+					w.logger.Debug("no job available", "job_type", w.JobType)
 					return
 				}
 
 				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-					w.logger.Error("request failed", "status", resp.StatusCode)
+					w.logger.Error("unexpected status fetching job", "status", resp.StatusCode, "job_type", w.JobType)
 				}
 
 				var job models.Job
 
 				// Decode the JSON response
 				if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
-					w.logger.Error("error reading response body", "error", err)
+					w.logger.Error("failed to decode job response", "error", err, "job_type", w.JobType)
 					return
 				}
 
-				// print for now
-				w.logger.Info("job info", "job", job)
+				w.logger.Info("job received", "job_id", job.Id, "job_type", w.JobType)
 
 				//else -> Process and Update the broker
 				w.ProcessJob(job, stopCh)
@@ -146,14 +145,11 @@ func (w *Worker) updateJobRequest(job models.Job) error {
 		return fmt.Errorf("unexpected status: %s", res.Status)
 	}
 
-	resBody, err := io.ReadAll(res.Body)
-	if err != nil {
+	if _, err := io.ReadAll(res.Body); err != nil {
 		return fmt.Errorf("error %w", err)
 	}
 
-	// print the updated job
-	w.logger.Info("status", "code", res.Status)
-	w.logger.Info("msg", "response", string(resBody))
+	w.logger.Info("job update accepted by broker", "job_id", job.Id, "job_type", w.JobType, "status", res.Status)
 
 	return nil
 }
@@ -204,14 +200,11 @@ func (w *Worker) sendHeartbeat(job models.Job) error {
 		return fmt.Errorf("unexpected status: %s", res.Status)
 	}
 
-	resBody, err := io.ReadAll(res.Body)
-	if err != nil {
+	if _, err := io.ReadAll(res.Body); err != nil {
 		return fmt.Errorf("error %w", err)
 	}
 
-	// print the updated job
-	w.logger.Info("status", "code", res.Status)
-	w.logger.Info("msg", "response", string(resBody))
+	w.logger.Debug("heartbeat acknowledged", "job_id", job.Id, "job_type", w.JobType)
 
 	return nil
 }
@@ -249,14 +242,11 @@ func (w *Worker) UpdateFailedJob(job models.Job) error {
 		return fmt.Errorf("unexpected status: %s", res.Status)
 	}
 
-	resBody, err := io.ReadAll(res.Body)
-	if err != nil {
+	if _, err := io.ReadAll(res.Body); err != nil {
 		return fmt.Errorf("error %w", err)
 	}
 
-	// print the updated job
-	w.logger.Info("status", "code", res.Status)
-	w.logger.Info("msg", "response", string(resBody))
+	w.logger.Info("job failure reported to broker", "job_id", job.Id, "job_type", w.JobType, "status", res.Status)
 
 	return nil
 }
@@ -276,17 +266,17 @@ func (w *Worker) ProcessJob(job models.Job, stopCh <-chan struct{}) {
 		case <-heartBeat.C:
 			if err := w.sendHeartbeat(job); err != nil {
 				if errors.Is(err, LeaseLostErr) {
-					w.logger.Warn("lease lost, abandoning job", "job", job.Id)
+					w.logger.Warn("lease lost, abandoning job", "job_id", job.Id, "job_type", w.JobType)
 					return
 				}
-				w.logger.Error("heartbeat failed, will retry next tick", "error", err)
+				w.logger.Error("heartbeat failed, will retry next tick", "error", err, "job_id", job.Id, "job_type", w.JobType)
 			}
 		case err := <-resultCh:
 			if err != nil {
 				failedErr := w.UpdateFailedJob(job)
 
 				if failedErr != nil {
-					w.logger.Error("UpdateFailedJob error", "error", failedErr)
+					w.logger.Error("failed to report job failure to broker", "error", failedErr, "job_id", job.Id, "job_type", w.JobType)
 				}
 				return
 			}
@@ -297,7 +287,7 @@ func (w *Worker) ProcessJob(job models.Job, stopCh <-chan struct{}) {
 			updateErr := w.updateJobRequest(job)
 
 			if updateErr != nil {
-				w.logger.Error("worker updateJobRequest error", "error", updateErr)
+				w.logger.Error("failed to update completed job on broker", "error", updateErr, "job_id", job.Id, "job_type", w.JobType)
 			}
 
 			return
