@@ -30,3 +30,6 @@ go.work.sum
 
 # build file output
 projecthermes
+
+# benchmark scratch dir (real-disk TMPDIR override, see docs/BENCHMARKS.md)
+.benchtmp/
