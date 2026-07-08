@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -35,7 +36,13 @@ func main() {
 		log.Fatalf("failed to start broker: %v", err)
 	}
 
+	// Demo worker: honors a failure tag the load generator sets in the payload,
+	// so the retry -> backoff -> DLQ path can be exercised on demand. A real
+	// worker would fail here on genuinely bad input; this just simulates it.
 	p := func(j models.Job) error {
+		if out, _ := j.Payload["_demo_outcome"].(string); out == "fail" {
+			return fmt.Errorf("simulated failure for job %s", j.Id)
+		}
 		return nil
 	}
 	workerPool := worker.NewWorkerPool(3, "http://localhost:8080", "email_job", p)
