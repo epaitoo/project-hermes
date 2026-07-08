@@ -254,13 +254,7 @@ Completed:
 - Persistence: write-ahead log with durable appends and crash recovery.
 - Observability: lifecycle metrics and a Prometheus endpoint.
 
-Planned:
-
-- Documentation: ADRs, architecture diagrams, and benchmarks.
-- Deployment: a live demo.
 
 Intentionally out of scope for now: a delayed and recurring job scheduler, a monitoring dashboard, and production hardening such as rate limiting and backpressure. These are natural next steps rather than gaps in the core design.
 
-## License
 
-To be decided.
