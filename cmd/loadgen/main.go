@@ -99,7 +99,7 @@ func submitJob(ctx context.Context, client *http.Client, url string, seq int64, 
 
 	body := submitBody{
 		Name:          fmt.Sprintf("demo-job-%d", seq),
-		TaskType:      "email",
+		TaskType:      "email_job",
 		Payload:       payload,
 		LeaseDuration: 30 * time.Second,
 		MaxRetries:    3,
