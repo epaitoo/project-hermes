@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +12,7 @@ import (
 	"github.com/epaitoo/hermes/internal/broker"
 	"github.com/epaitoo/hermes/internal/models"
 	"github.com/epaitoo/hermes/internal/worker"
+	"github.com/joho/godotenv"
 )
 
 func startLeaseChecker(stopCh <-chan struct{}, bs *broker.BrokerServer) {
@@ -30,7 +32,21 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	brokerServer, err := broker.NewBrokerServer()
+	err := godotenv.Load()
+
+	if err != nil {
+		slog.Error("error loading .env file:", "error", err)
+		return
+	}
+
+	val := os.Getenv("HERMES_WAL_PATH")
+	slog.Info("wal path resolved", "path", val)
+
+	if val == "" {
+		val = "hermes.wal"
+	}
+
+	brokerServer, err := broker.NewBrokerServer(val)
 
 	if err != nil {
 		log.Fatalf("failed to start broker: %v", err)

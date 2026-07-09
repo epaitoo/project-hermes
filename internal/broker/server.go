@@ -24,8 +24,8 @@ type BrokerServer struct {
 // GET  /queues/{queueName}/jobs        - RequestJob
 // PUT  /queues/{queueName}/jobs/{jobId} - UpdateJob
 
-func NewBrokerServer() (*BrokerServer, error) {
-	w, err := wal.Open("hermes.wal")
+func NewBrokerServer(walPath string) (*BrokerServer, error) {
+	w, err := wal.Open(walPath)
 
 	if err != nil {
 		return nil, err

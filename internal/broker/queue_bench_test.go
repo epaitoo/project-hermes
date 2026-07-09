@@ -39,8 +39,7 @@ func BenchmarkSubmit(b *testing.B) {
 	q := newBenchQueue(b)
 	const queueName = "email"
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if err := q.AddJob(queueName, benchJob()); err != nil {
 			b.Fatal(err)
 		}
@@ -59,8 +58,7 @@ func BenchmarkPollLease(b *testing.B) {
 	b.Cleanup(func() { w.Close() })
 	const queueName = "email"
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		b.StopTimer()
 		q := NewQueue(w, &metrics.Metrics{})
 		if err := q.AddJob(queueName, benchJob()); err != nil {
