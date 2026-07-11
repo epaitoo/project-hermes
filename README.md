@@ -2,9 +2,35 @@
 
 A production-grade distributed task queue and job scheduler, built from scratch in Go.
 
+![Hermes crash-recovery demo](asset/result-final.gif)
+
 Hermes lets you submit background jobs and have them processed reliably across a pool of workers, surviving both worker crashes and broker restarts. It is built entirely from first principles: no Redis, no RabbitMQ, no Kafka, no external message broker of any kind. The queuing, failure detection, durability, and crash recovery are all implemented directly on top of Go's standard library and a hand-rolled write-ahead log.
 
 That constraint is deliberate. The value of Hermes is not that it queues jobs; plenty of tools do that. It is that every hard part a real task queue has to solve is solved here in code you can read and reason about.
+
+## What the demo shows
+
+A load generator drives jobs into the broker while a worker pool drains them.
+Partway through, the broker process is killed mid-flight, then restarted.
+
+1. **Climb.** Jobs are submitted faster than the workers drain them, so
+   `pending` accumulates and `leased` settles at the worker-pool size.
+   Poison jobs exhaust their retries and land in the dead-letter queue.
+
+2. **Crash.** The broker is stopped. Prometheus can no longer scrape it, so
+   the series break: there is no data at all for the duration of the outage.
+
+3. **Recovery.** The broker restarts and replays its write-ahead log.
+   - `leased` returns to **zero**: lease state is ephemeral and is deliberately
+     discarded on recovery. Jobs that were in flight are reset to pending.
+   - `pending` **absorbs those in-flight jobs** (131 pending + in-flight → 138).
+     No work is lost.
+   - `dlq_size` **holds its pre-crash value**: dead-letter membership is durable.
+   - The counters **reset to zero**. They live in memory and are legitimately
+     lost; what matters for a counter is its rate, not its lifetime total.
+
+The gauges returning while the counters reset is the point: durable state
+survives the crash, ephemeral state does not, and the split is by design.
 
 ## Contents
 
