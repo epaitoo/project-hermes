@@ -28,30 +28,40 @@ const (
 	Terminated WorkerState = "terminated"
 )
 
+// defaultPollInterval is how often a worker polls the broker for a job when no
+// interval is configured. Kept at 30s for production; the demo overrides it via
+// HERMES_WORKER_POLL_INTERVAL so the crash-recovery GIF stays lively.
+const defaultPollInterval = 30 * time.Second
+
 type Worker struct {
 	Id             uuid.UUID
 	State          WorkerState
 	BrokerEndpoint string
 	Process        func(models.Job) error
 	JobType        string
+	PollInterval   time.Duration
 	logger         *slog.Logger
 }
 
-func NewWorker(brokerEndpoint string, proccesFunc func(models.Job) error, jobType string) *Worker {
+func NewWorker(brokerEndpoint string, proccesFunc func(models.Job) error, jobType string, pollInterval time.Duration) *Worker {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if pollInterval <= 0 {
+		pollInterval = defaultPollInterval
+	}
 	return &Worker{
 		Id:             uuid.New(),
 		State:          Idle,
 		BrokerEndpoint: brokerEndpoint,
 		Process:        proccesFunc,
 		JobType:        jobType,
+		PollInterval:   pollInterval,
 		logger:         logger,
 	}
 
 }
 
 func (w *Worker) Start(stopCh <-chan struct{}) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(w.PollInterval)
 
 	for {
 		select {

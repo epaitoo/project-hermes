@@ -1,0 +1,18 @@
+global:
+  # 15s is the sane production default. 5s is a deliberate demo-resolution
+  # choice: the crash-recovery story (climb -> flatline -> WAL replay snap-back)
+  # has to be legible in a ~15s GIF, and one point per 15s renders that as an
+  # ambiguous stair-step. 5s gives ~4-5x the resolution at negligible cost for a
+  # low-cardinality internal service. timeout must be < interval; 3s is ample for
+  # a local /metrics that returns instantly.
+  scrape_interval: 5s
+  scrape_timeout: 3s
+
+scrape_configs:
+  - job_name: hermes-broker
+    # Default metrics_path (/metrics) and http scheme are correct for the broker.
+    # "broker" resolves over the compose network to the broker service.
+    static_configs:
+      - targets: ["broker:8080"]
+        labels:
+          service: hermes

@@ -1,0 +1,66 @@
+services:
+  broker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hermes-broker:latest
+    container_name: hermes-broker
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Point the WAL at the mounted volume. The Dockerfile already defaults to
+      # this, but pinning it here keeps the source of truth next to the mount.
+      HERMES_WAL_PATH: /data/hermes.wal
+      # Demo cadence: workers poll fast so leased/completed/DLQ move on camera.
+      # Production default is 30s (unset). See internal/worker defaultPollInterval.
+      HERMES_WORKER_POLL_INTERVAL: 500ms
+      # Simulated per-job work so the leased gauge registers nonzero. Default is
+      # 0 (instant); demo-only. Comparable to the poll interval keeps ~1-3 leased.
+      HERMES_DEMO_WORK_DURATION: 400ms
+    volumes:
+      # Named volume: Docker seeds it from the image's /data, inheriting the
+      # nonroot (65532) ownership so wal.Open can write. A bind mount would
+      # need the host dir chowned to 65532 first.
+      - hermes-wal:/data
+    # No healthcheck: the image is distroless (no shell/curl/wget), so an
+    # in-container probe can't run. Liveness is covered externally by the
+    # Prometheus scrape of /metrics.
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: hermes-prometheus
+    restart: unless-stopped
+    depends_on:
+      - broker
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: hermes-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      # Anonymous Viewer + no login form: the dashboard loads straight to the
+      # graphs for the GIF, no auth wall. Fine for a local/demo stack.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      # Grafana's own state (has its own uid; keep it a named volume).
+      - grafana-data:/var/lib/grafana
+      # Provisioning + committed dashboards, read-only: Grafana never writes them.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  hermes-wal:
+  prometheus-data:
+  grafana-data:
