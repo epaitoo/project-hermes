@@ -1,0 +1,11 @@
+# Keep build context small and secrets/local state out of the image.
+.git
+.gitignore
+Dockerfile
+.dockerignore
+.env
+*.wal
+hermes.wal
+README.md
+docs/
+*_test.go

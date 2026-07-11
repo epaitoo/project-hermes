@@ -32,11 +32,8 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	err := godotenv.Load()
-
-	if err != nil {
-		slog.Error("error loading .env file:", "error", err)
-		return
+	if err := godotenv.Load(); err != nil {
+		slog.Info("no .env file loaded; using process environment", "error", err)
 	}
 
 	val := os.Getenv("HERMES_WAL_PATH")
