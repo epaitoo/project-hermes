@@ -1,0 +1,15 @@
+# Terraform state: contains real resource IDs and secrets
+terraform.tfstate
+terraform.tfstate.*
+
+# Provider plugins and working directory
+.terraform/
+
+# Variable values: contains the API token
+terraform.tfvars
+*.auto.tfvars
+
+# Crash logs
+crash.log
+
+.session_start
