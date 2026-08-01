@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-broker-headless
+  labels:
+    app: hermes-broker
+spec:
+  clusterIP: None
+  selector:
+    app: hermes-broker
+  ports:
+    - port: 8080
+      targetPort: http
+      name: http

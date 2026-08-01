@@ -12,6 +12,8 @@ resource "digitalocean_kubernetes_cluster" "hermes" {
   version  = data.digitalocean_kubernetes_versions.current.latest_version
   vpc_uuid = data.digitalocean_vpc.default.id
 
+  destroy_all_associated_resources = true
+
   node_pool {
     name       = "${var.cluster_name}-pool"
     size       = var.node_size

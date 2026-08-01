@@ -11,4 +11,7 @@ if [[ -f .session_start ]]; then
 fi
 
 terraform destroy -auto-approve
-echo "Destroyed. Verify at https://cloud.digitalocean.com/kubernetes/clusters"
+echo "Destroyed. Checking for leftover resources..."
+doctl kubernetes cluster list --format Name,Status --no-header
+doctl compute volume list --format Name,Size,Region --no-header
+echo "(Empty output above means nothing is left billing.)"

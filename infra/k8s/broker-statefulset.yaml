@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hermes-broker
+  labels:
+    app: hermes-broker
+spec:
+  serviceName: hermes-broker-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hermes-broker
+  template:
+    metadata:
+      labels:
+        app: hermes-broker
+    spec:
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: broker
+          image: ghcr.io/epaitoo/project-hermes:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: wal
+              mountPath: /data
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+  volumeClaimTemplates:
+    - metadata:
+        name: wal
+        labels:
+          app: hermes-broker
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+
