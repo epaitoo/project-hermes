@@ -45,6 +45,7 @@ survives the crash, ephemeral state does not, and the split is by design.
 - [Observability](#observability)
 - [Testing](#testing)
 - [Design decisions](#design-decisions)
+- [Deployment](#deployment)
 - [Roadmap](#roadmap)
 
 ## Why Hermes
@@ -269,6 +270,99 @@ Hermes is as much about the reasoning behind the design as the code. The archite
 - Why lease expiry is counted as a retry rather than tracked as a distinct state.
 - Why in-flight leases are discarded on recovery while retry counts survive.
 - Why the log framing puts the checksum ahead of the content it protects, and why only the tail is assumed torn.
+
+## Deployment
+
+Hermes runs on managed Kubernetes, provisioned from code. Infrastructure lives in `infra/` (Terraform), workload manifests in `k8s/`.
+
+### Infrastructure
+
+A DigitalOcean Kubernetes cluster is declared in Terraform. The Kubernetes version is resolved through a data source rather than pinned to a literal, so the config does not go stale as DigitalOcean retires patch releases:
+
+```hcl
+data "digitalocean_kubernetes_versions" "current" {
+  version_prefix = "1."
+}
+
+resource "digitalocean_kubernetes_cluster" "hermes" {
+  version  = data.digitalocean_kubernetes_versions.current.latest_version
+  vpc_uuid = data.digitalocean_vpc.default.id
+  ...
+}
+```
+
+Two helper scripts wrap the lifecycle, since the cluster is created and destroyed per working session rather than left running:
+
+```bash
+cd infra
+./up.sh     # terraform apply, fetch kubeconfig via doctl, verify nodes are Ready
+./down.sh   # terraform destroy, then confirm no clusters or volumes remain
+```
+
+`down.sh` verifies teardown rather than assuming it. Orphaned block-storage volumes bill silently, so the script queries for leftovers after destroying, and the cluster sets `destroy_all_associated_resources = true` so volumes provisioned inside it are removed with it.
+
+### Why a StatefulSet, not a Deployment
+
+The broker owns a write-ahead log on local disk. That single fact makes it a stateful singleton rather than an interchangeable replica, and it drives three decisions:
+
+- **StatefulSet over Deployment**: a Deployment treats pods as anonymous and fungible, naming them randomly and replacing them in any order. The broker needs stable identity, so that the replacement for `hermes-broker-0` is also `hermes-broker-0` and reattaches to the same volume.
+- **`volumeClaimTemplates` over a standalone PVC**: the StatefulSet stamps out one claim per pod, named `wal-hermes-broker-0`, bound to that pod permanently. A Deployment has no way to express "this pod, specifically, gets that volume."
+- **`replicas: 1`**: two brokers would each hold independent in-memory state backed by separate WALs, and clients would see two divergent views of the same queue. `ReadWriteOnce` block storage enforces the same conclusion from the storage side: a block device cannot be safely written by two nodes at once.
+
+One deployment detail worth recording: the container runs as uid 65532 under distroless, and the Dockerfile chowns `/data` to that uid at build time. Mounting a volume at `/data` replaces that directory entirely, and a freshly provisioned volume is root-owned, so `wal.Open` fails with permission denied. The fix is a pod-level `securityContext` with `fsGroup: 65532`, which makes Kubernetes set group ownership on the volume before the container starts.
+
+### Deployed state
+
+```
+NAME                             READY   AGE
+statefulset.apps/hermes-broker   1/1     15m
+
+NAME                             TYPE        CLUSTER-IP      PORT(S)    AGE
+service/hermes-broker            ClusterIP   10.115.24.212   8080/TCP   14m
+service/hermes-broker-headless   ClusterIP   None            8080/TCP   13m
+
+NAME                  READY   STATUS    RESTARTS   AGE
+pod/hermes-broker-0   1/1     Running   0          6m37s
+
+NAME                  STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS
+wal-hermes-broker-0   Bound    pvc-dc27ae1c-65b3-4212-a8d7-a6a347c933f8   1Gi        RWO            do-block-storage
+```
+
+Two services, deliberately. `hermes-broker` is a normal ClusterIP that workers connect to at a stable in-cluster address, `hermes-broker:8080`, without caring which pod answers. `hermes-broker-headless` has no cluster IP at all; it exists to give each pod its own DNS record, which is what a StatefulSet requires to provide per-pod network identity.
+
+The ages in that output are the interesting part. The StatefulSet and the PVC are 15 minutes old; the pod is 6 minutes old. The pod was destroyed and recreated while its storage persisted underneath it.
+
+### Durability across pod destruction
+
+The WAL's guarantee is only meaningful if it survives the pod being destroyed, not merely the process restarting. Verified directly against the cluster.
+
+Five jobs submitted, then the pod deleted outright:
+
+```bash
+for i in 1 2 3 4 5; do
+  curl -s -X POST http://localhost:8080/queues/email/jobs \
+    -H "Content-Type: application/json" \
+    -d "{\"name\":\"k8s-test-$i\",\"task_type\":\"email\",\"max_retries\":3}"
+done
+
+kubectl delete pod hermes-broker-0
+```
+
+After Kubernetes recreated the pod, `/metrics` on the new process reports:
+
+```
+hermes_jobs_submitted_total 0
+hermes_jobs_completed_total 0
+hermes_jobs_dead_letter_total 0
+hermes_jobs_attempt_failure_total 0
+hermes_jobs_pending 5
+hermes_jobs_leased 0
+hermes_jobs_dlq_size 0
+```
+
+Every counter reads zero and the `pending` gauge reads five, and that split is the design working as intended. Counters measure the rate of activity through a running process; this is a new process, so it has submitted nothing and starts from zero. Gauges describe current state, and `Recover()` rebuilds them by replaying the log, so `pending` reflects what is actually in the queue.
+
+Five jobs submitted to a process that no longer exists, still queued. The container filesystem was discarded with the pod. The WAL was not, because it lives on a block-storage volume that outlives the pod bound to it.
 
 ## Roadmap
 
