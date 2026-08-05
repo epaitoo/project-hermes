@@ -1,0 +1,33 @@
+apiVersion: v1
+data:
+  dashboards.yml: |
+    apiVersion: 1
+
+    providers:
+      - name: Hermes
+        orgId: 1
+        folder: ""
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 10
+        allowUiUpdates: false
+        options:
+          # Directory of committed dashboard JSON, bind-mounted read-only.
+          path: /var/lib/grafana/dashboards
+          foldersFromFilesStructure: false
+  datasource.yml: |
+    apiVersion: 1
+
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        # Fixed uid so the committed dashboard JSON can reference it portably.
+        uid: prometheus
+        access: proxy
+        # Service-name DNS on the compose network; unchanged on a VPS.
+        url: http://prometheus:9090
+        isDefault: true
+        editable: false
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning

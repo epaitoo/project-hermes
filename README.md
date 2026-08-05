@@ -164,16 +164,24 @@ Queue state is shared across concurrent submitters, pollers, and the lease check
 ## Project structure
 
 ```
-hermes/
+project-hermes/
   cmd/
-    demo/            # curl-driven crash-and-restart demo harness
-    broker/          # broker server entrypoint  (verify: your actual server main)
+    broker/          # broker server entrypoint
+    demo/            # crash-and-restart demo harness
+    loadgen/         # continuous job submitter for driving the demo
   internal/
     models/          # shared types: Job, JobStatus (neutral package both broker and worker import)
     broker/          # BrokerServer, Queue, HTTP handlers, lease checker
     worker/          # Worker and worker pool: poll, process, report, heartbeat
     wal/             # write-ahead log: Encode/Decode, Append, Recover, framing + checksums
     metrics/         # Metrics struct (atomic counters/gauges), Snapshot, Prometheus rendering
+  infra/             # Terraform: DigitalOcean Kubernetes cluster, lifecycle scripts
+  k8s/               # Kubernetes manifests: StatefulSet, Services, RBAC, Prometheus, Grafana
+  prometheus/        # Prometheus config for the local docker-compose stack
+  grafana/           # Grafana provisioning and committed dashboard JSON
+  docs/              # architecture notes and decision records
+  docker-compose.yml
+  Dockerfile
   go.mod
 ```
 
@@ -188,8 +196,8 @@ The `models` package exists specifically so that `broker` and `worker` never imp
 ### Build
 
 ```bash
-git clone https://github.com/epaitoo/hermes.git
-cd hermes
+git clone https://github.com/epaitoo/project-hermes.git
+cd project-hermes
 go build ./...
 ```
 
@@ -237,18 +245,18 @@ Hermes exposes seven metrics at `/metrics` in Prometheus exposition format, chos
 
 **Counters** (monotonic; reset to zero on restart, because the meaningful thing about a counter is its rate):
 
-- `jobs_submitted_total`
-- `jobs_completed_total`
-- `jobs_dead_lettered_total`
-- `job_attempt_failures_total`
+- `hermes_jobs_submitted_total`
+- `hermes_jobs_completed_total`
+- `hermes_jobs_dead_letter_total`
+- `hermes_jobs_attempt_failure_total`
 
-A single coarse "failed" counter was deliberately split into `job_attempt_failures_total` and `jobs_dead_lettered_total`. Collapsing them into one number hides retry churn: a queue thrashing on retries and a queue quietly giving up on jobs would look identical, and they are very different problems.
+A single coarse "failed" counter was deliberately split into `hermes_jobs_attempt_failure_total` and `hermes_jobs_dead_letter_total`. Collapsing them into one number hides retry churn: a queue thrashing on retries and a queue quietly giving up on jobs would look identical, and they are very different problems.
 
 **Gauges** (can go down; restored during recovery, because recovery reconstructs the true current state):
 
-- `pending`
-- `leased`
-- `dlq_size`
+- `hermes_jobs_pending`
+- `hermes_jobs_leased`
+- `hermes_jobs_dlq_size`
 
 Metric increments follow a strict placement rule: a counter is only bumped past the last point where the operation can still fail. The WAL append is that commit boundary, so a job is not counted as submitted until it is durably logged.
 
@@ -295,11 +303,13 @@ Two helper scripts wrap the lifecycle, since the cluster is created and destroye
 
 ```bash
 cd infra
-./up.sh     # terraform apply, fetch kubeconfig via doctl, verify nodes are Ready
+./up.sh     # terraform apply, fetch kubeconfig via doctl, apply manifests, verify nodes
 ./down.sh   # terraform destroy, then confirm no clusters or volumes remain
 ```
 
 `down.sh` verifies teardown rather than assuming it. Orphaned block-storage volumes bill silently, so the script queries for leftovers after destroying, and the cluster sets `destroy_all_associated_resources = true` so volumes provisioned inside it are removed with it.
+
+Cost-bearing fields are set explicitly rather than left to provider defaults. `ha = false` in particular: the high-availability control plane is roughly three times the cost of the worker node this cluster runs, and a field that shows as `(known after apply)` in a plan is a field whose price you have not actually agreed to.
 
 ### Why a StatefulSet, not a Deployment
 
@@ -364,6 +374,46 @@ Every counter reads zero and the `pending` gauge reads five, and that split is t
 
 Five jobs submitted to a process that no longer exists, still queued. The container filesystem was discarded with the pod. The WAL was not, because it lives on a block-storage volume that outlives the pod bound to it.
 
+### Observability on Kubernetes
+
+The compose stack points Prometheus at a static target, `broker:8080`, which works because Docker gives every service a fixed hostname. Kubernetes breaks that assumption: pods are mortal and their replacements get new IPs, so a static target list is stale the moment anything restarts.
+
+The Kubernetes config uses service discovery instead. Prometheus holds a watch on the Kubernetes API, and a relabel pipeline filters the resulting pod list down to those that opt in via annotation:
+
+```yaml
+relabel_configs:
+  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+    action: keep
+    regex: true
+```
+
+The broker opts in with three lines on its pod template:
+
+```yaml
+annotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+```
+
+Neither side names the other. The Prometheus config never mentions Hermes, and the broker knows nothing about Prometheus; they meet through a convention. The same loose coupling appears twice more in this deployment: labels connect the StatefulSet to its pods, and selectors connect Services to pods.
+
+The effect is visible in practice. DigitalOcean annotates its own `cilium` pods with the same convention, so they are discovered and scraped without any configuration on either side.
+
+Prometheus reads the cluster through a ServiceAccount bound to a ClusterRole granting `get`, `list`, and `watch` on pods, services, endpoints, and nodes, and nothing else. The `watch` verb is what makes discovery responsive: new pods are picked up within seconds rather than at the next polling cycle.
+
+Grafana's provisioning carries over from the compose stack unchanged. The datasource points at `http://prometheus:9090`, a name that resolves identically whether the DNS comes from Docker's embedded resolver or from CoreDNS resolving a Service. Both provisioning files and the dashboard JSON are mounted as ConfigMaps, generated from the committed files rather than duplicated:
+
+```bash
+kubectl create configmap grafana-dashboards \
+  --from-file=grafana/dashboards/hermes.json \
+  --dry-run=client -o yaml > k8s/grafana-dashboards-configmap.yaml
+```
+
+Prometheus runs as a Deployment with an `emptyDir`, deliberately without persistence. Its data is derived state: losing it costs history, but nothing is corrupted and the system keeps working. The broker's WAL is authoritative state, where loss means losing jobs a client was told were accepted. That distinction, not "is it a database," is what drives the StatefulSet-versus-Deployment decision.
+
+Neither Prometheus nor Grafana is exposed publicly. Both are `ClusterIP` services reached by port-forwarding, which costs nothing; a managed load balancer would be a recurring monthly charge, and a NodePort would put an unauthenticated Grafana on a public IP.
+
 ## Roadmap
 
 Completed:
@@ -372,9 +422,11 @@ Completed:
 - Poll-based worker pool with the full job lifecycle.
 - Fault tolerance: leases, heartbeats, retries, and a dead letter queue.
 - Persistence: write-ahead log with durable appends and crash recovery.
-- Observability: lifecycle metrics and a Prometheus endpoint.
+- Observability: lifecycle metrics, a Prometheus endpoint, and Grafana dashboards as code.
+- Deployment: Terraform-provisioned managed Kubernetes, with the broker as a StatefulSet on persistent block storage and the observability stack running on-cluster.
 
+Planned:
 
-Intentionally out of scope for now: a delayed and recurring job scheduler, a monitoring dashboard, and production hardening such as rate limiting and backpressure. These are natural next steps rather than gaps in the core design.
+- CI/CD: automated test, build, and deploy on push.
 
-
+Intentionally out of scope for now: a delayed and recurring job scheduler, and production hardening such as rate limiting and backpressure. These are natural next steps rather than gaps in the core design.
