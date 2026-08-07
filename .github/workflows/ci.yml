@@ -7,7 +7,7 @@ on:
       - '**.md'
       - 'docs/**'
       - 'asset/**'
-  pull-requests:
+  pull_request:
     branches: [main]
 
 jobs:
