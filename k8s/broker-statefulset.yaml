@@ -24,6 +24,7 @@ spec:
       containers:
         - name: broker
           image: ghcr.io/epaitoo/project-hermes:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               name: http
