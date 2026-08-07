@@ -23,7 +23,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: broker
-          image: ghcr.io/epaitoo/project-hermes:18a49d9b38ea62bed58e65ab2a3cdee5e8dfeca5
+          image: ghcr.io/epaitoo/project-hermes:23bdf8f01c8b613dd049afee10338356e87a4f52
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
