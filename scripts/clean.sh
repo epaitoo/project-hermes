@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# k8s/clean.sh - remove Hermes workloads and their storage
+# scripts/clean.sh - remove Hermes workloads and their storage
 set -euo pipefail
 
 kubectl delete statefulset hermes-broker --ignore-not-found

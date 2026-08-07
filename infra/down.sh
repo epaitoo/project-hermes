@@ -10,8 +10,12 @@ if [[ -f .session_start ]]; then
   rm .session_start
 fi
 
+echo "Removing PVCs so the CSI driver releases their volumes..."
+kubectl delete pvc -l app=hermes-broker --ignore-not-found 2>/dev/null || true
+
 terraform destroy -auto-approve
-echo "Destroyed. Checking for leftover resources..."
-doctl kubernetes cluster list --format Name,Status --no-header
-doctl compute volume list --format Name,Size,Region --no-header
-echo "(Empty output above means nothing is left billing.)"
+
+echo "Destroyed. Checking for leftover resources:"
+doctl kubernetes cluster list --no-header || true
+doctl compute volume list --no-header || true
+echo "(If anything is listed above, it is still billing. Delete it.)"

@@ -414,6 +414,78 @@ Prometheus runs as a Deployment with an `emptyDir`, deliberately without persist
 
 Neither Prometheus nor Grafana is exposed publicly. Both are `ClusterIP` services reached by port-forwarding, which costs nothing; a managed load balancer would be a recurring monthly charge, and a NodePort would put an unauthenticated Grafana on a public IP.
 
+### Continuous integration and delivery
+
+Every push to `main` runs a three-stage pipeline in GitHub Actions: test, build, and pin.
+
+```
+test           go vet, then go test -race ./...
+  ↓ needs
+build          build the image, push to ghcr.io under two tags
+  ↓ needs
+update-manifest  rewrite the StatefulSet's image reference, commit it back
+```
+
+The `needs:` dependency between stages is what makes this a pipeline rather than three scripts. A failing test stops the build, so a broken commit never produces a published image.
+
+#### Immutable tags
+
+The pipeline pushes each build under two tags:
+
+```yaml
+tags: |
+  ghcr.io/epaitoo/project-hermes:${{ github.sha }}
+  ghcr.io/epaitoo/project-hermes:latest
+```
+
+`latest` is a mutable pointer, and mutability is the problem. Pushing a new image under the same tag leaves the name unchanged, so Kubernetes has no way to tell that the running pod is out of date, and the node's cached layer may be used instead of the new one. The symptom is a deploy that reports success while the old code keeps running.
+
+Tagging by commit SHA makes every build uniquely addressable. The running container traces back to an exact commit, and rollback is a matter of pointing at an earlier SHA rather than rebuilding anything. `latest` is kept only as a convenience pointer for local pulls.
+
+#### Credentials
+
+The build job authenticates to the registry with `secrets.GITHUB_TOKEN`, which is not a stored secret. GitHub mints it per workflow run, scopes it to this repository, and expires it when the run ends. Nothing long-lived is stored anywhere.
+
+Permissions are granted per job rather than globally:
+
+```yaml
+build:
+  permissions:
+    contents: read
+    packages: write
+
+update-manifest:
+  permissions:
+    contents: write
+```
+
+The build job can publish an image but cannot alter the repository; the manifest job can commit but has no registry access. The repository-level setting raises the ceiling on what a token may request, but these per-job blocks remain the effective constraint.
+
+#### Why not GitOps
+
+The conventional choice at this point is a pull-based agent in the cluster, Argo CD or Flux, watching the repository and reconciling. It is the better architecture in general: the cluster reaches out to git rather than CI reaching into the cluster, so no external system holds cluster credentials, and drift from manual changes gets corrected automatically.
+
+It was rejected here because of this cluster's lifecycle. The cluster is created and destroyed per working session, so a reconciliation agent would spend most of its existence not running, and would need reinstalling on every `up.sh`. Continuous reconciliation solves drift over days and weeks; a cluster that lives for two hours and is then rebuilt from scratch has essentially no drift to correct. The agent's components would also be a poor fit for the memory left on a single small node after Kubernetes, Prometheus, and Grafana.
+
+What the pipeline does instead is stop one step short of deploying. CI updates the manifest in git and commits it; the `kubectl apply` happens when the cluster next comes up. Git remains the source of truth for which image should be running, but no credential for the cluster exists outside the machine that provisions it. The tradeoff is honest: this is not continuous deployment, because nothing deploys until a cluster exists. Given the cluster usually does not, that costs nothing.
+
+#### Guarding against a commit loop
+
+The manifest job pushes a commit to `main`, which is itself a trigger for the workflow. Left unguarded, that recurses indefinitely:
+
+```bash
+if git diff --quiet; then
+  echo "Manifest already current, nothing to commit."
+  exit 0
+fi
+```
+
+The second run finds the manifest already pinned to the current SHA, has nothing to commit, and exits. The trigger also ignores documentation-only changes, so a README edit does not rebuild a container.
+
+#### Pull policy
+
+The StatefulSet sets `imagePullPolicy: Always`. Kubernetes defaults to `IfNotPresent` for non-`latest` tags, preferring the node's cached copy. With SHA tags every image is genuinely new so the cache would miss regardless, but stating the policy removes a category of stale-image confusion rather than relying on the tag scheme to make it impossible.
+
 ## Roadmap
 
 Completed:
@@ -424,9 +496,7 @@ Completed:
 - Persistence: write-ahead log with durable appends and crash recovery.
 - Observability: lifecycle metrics, a Prometheus endpoint, and Grafana dashboards as code.
 - Deployment: Terraform-provisioned managed Kubernetes, with the broker as a StatefulSet on persistent block storage and the observability stack running on-cluster.
-
-Planned:
-
 - CI/CD: automated test, build, and deploy on push.
+
 
 Intentionally out of scope for now: a delayed and recurring job scheduler, and production hardening such as rate limiting and backpressure. These are natural next steps rather than gaps in the core design.
